@@ -14,6 +14,7 @@ import {
   templateContentText,
 } from '@/lib/whatsapp/template-body'
 import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve'
+import { assertMarketingAllowed, MarketingSuppressedError } from '@/lib/whatsapp/suppression'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -162,6 +163,21 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
           )
         ).row
       : null
+
+  // Hard suppression — same rule as every other template-send path
+  // (broadcasts, the manual/public-API send): a Marketing-category
+  // template never reaches an opted-out contact, even from an
+  // automation. Utility/Authentication templates are unaffected.
+  if (input.kind === 'template') {
+    try {
+      await assertMarketingAllowed(db, input.contactId, templateRow?.category)
+    } catch (err) {
+      if (err instanceof MarketingSuppressedError) {
+        throw new Error(err.message)
+      }
+      throw err
+    }
+  }
 
   const attempt = async (phone: string): Promise<string> => {
     if (input.kind === 'template') {

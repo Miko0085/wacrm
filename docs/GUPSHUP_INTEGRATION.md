@@ -196,28 +196,40 @@ regardless of whether the broadcast was started from the dashboard,
 
 ## Opt-in / opt-out
 
-Two independent signals feed the same `contacts.wa_marketing_status`
+Three independent signals feed the same `contacts.wa_marketing_status`
 column:
 
 1. **Gupshup's native `user-event` webhook** (`opted-in`/`opted-out`) —
    handled in the Gupshup webhook route, matched by the digits-only
    `phone_normalized` column.
-2. **A user-configured keyword automation** — `update_contact_field`
-   now accepts `wa_marketing_status` as a target field (in addition to
-   `name`/`email`/`company`), so a `keyword_match` trigger (STOP,
-   UNSUBSCRIBE, СТОП, etc. — configure whatever keywords you want,
-   matching the existing automation UI) can set
-   `OPTED_OUT`/`OPTED_IN` the same way the native event does. This is
-   **not** wired up automatically for new installs — set up that
-   automation if you want keyword-based opt-out in addition to (or
-   instead of) Gupshup's native event.
+2. **A system-default STOP keyword** (`inbound-pipeline.ts`'s
+   `applyStopKeywordIfMatched`) — always on, for both providers, not
+   dependent on any automation being configured. An exact (trimmed,
+   case-insensitive) match of the *whole* inbound message against
+   `STOP`, `UNSUBSCRIBE`, `REMOVE`, `СТОП`, `ОТПИСКА`, `НЕ ПИШИТЕ`
+   flips the contact to `OPTED_OUT` immediately, before flows/
+   automations dispatch. Matched on the whole message (not a
+   substring) so a sentence that merely contains one of these words
+   doesn't false-positive.
+3. **A user-configured keyword automation** (optional, additive) —
+   `update_contact_field` also accepts `wa_marketing_status` as a
+   target field, so an account can extend the keyword list beyond the
+   system default via a normal `keyword_match` automation if they want
+   different/additional phrases.
 
-Both signals converge on the same enforcement point (broadcasts,
-above) — there's one suppression mechanism, not two.
+All three converge on the same enforcement point — there's one
+suppression mechanism, not several. Suppression itself is enforced in
+every path that can send a **Marketing**-category template (broadcasts
+via `broadcast-core.ts`/the dashboard route/`broadcast-resume.ts`, the
+manual composer and public API via `send-message.ts`, and the
+automations engine's `send_template` action via
+`automations/meta-send.ts`) — see `src/lib/whatsapp/suppression.ts`.
+Utility/Authentication templates and free-form conversational replies
+are unaffected: opting out of marketing doesn't cut off an active
+support conversation, matching WhatsApp's own category semantics.
 
-Meta has no equivalent native opt-in/out webhook event in this
-integration; the keyword-automation path works identically for Meta
-accounts.
+The system-default STOP keyword and the suppression enforcement both
+apply identically to Meta accounts — neither is Gupshup-specific.
 
 ## Webhook security
 

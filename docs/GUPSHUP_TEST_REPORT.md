@@ -22,7 +22,7 @@ written.
 |---|---|
 | `npm run typecheck` | Clean |
 | `npm test` (vitest) | 892 passed / 3 failed / 895 total — 85 files passed, 1 failed (same pre-existing `currency.test.ts` failures) |
-| `npm run build` | See below |
+| `npm run build` | **PASS** — clean against a real local Supabase backend (see "Local deployment baseline" below). `Compiled successfully`, TypeScript pass clean, all 80 routes generated including the two new ones (`/api/whatsapp/gupshup/webhook/[token]`, `/api/whatsapp/config/test`). |
 
 **62 new tests added, 0 regressions.** Every existing test file that
 touched a call site rewired to `resolveWhatsAppProvider` — `send-message.test.ts`,
@@ -85,6 +85,43 @@ shipping]**.
   though `db`/`auth`/`postgrest`/`storage`/`kong` all report healthy;
   `supabase start --ignore-health-check` works around that CLI-level
   flakiness — it is unrelated to the WACRM migrations themselves.
+- Booted `npm run dev` against that local stack and smoke-tested the
+  new routes over HTTP: `/login` → 200, `/settings` → 307 (redirect to
+  login, expected unauthenticated), `GET /api/whatsapp/config` → 401
+  Unauthorized (not a 500), `POST /api/whatsapp/gupshup/webhook/<bogus-token>`
+  → 404 Not Found (not a crash), `POST /api/whatsapp/config/test` → 401
+  Unauthorized. No server errors on any of these.
+
+## Global marketing suppression + system-default STOP keyword
+
+Added after the initial provider-abstraction pass, per follow-up
+review:
+
+- **`src/lib/whatsapp/suppression.ts`** (`assertMarketingAllowed`) —
+  the same opted-out check broadcasts already enforced is now also
+  enforced in `send-message.ts` (the manual composer send AND the
+  public `/api/v1/messages` endpoint) and `automations/meta-send.ts`
+  (the `send_template` automation action), for a Marketing-category
+  template specifically. Utility/Authentication templates and
+  free-form replies are never blocked. Flows has no template-send node
+  (confirmed — only `send_message`/`send_media`/interactive), so no
+  change needed there.
+- **`applyStopKeywordIfMatched`** in `inbound-pipeline.ts` — a
+  system-default STOP keyword (`STOP`, `UNSUBSCRIBE`, `REMOVE`, `СТОП`,
+  `ОТПИСКА`, `НЕ ПИШИТЕ`, exact whole-message match, case-insensitive)
+  that runs unconditionally in the shared pipeline for both providers,
+  independent of any user-configured automation. A user can still add
+  more keywords via `update_contact_field` → `wa_marketing_status` in
+  their own automation, additively.
+- 18 new tests: `suppression.test.ts` (category/status matrix), 3 new
+  cases in `send-message.test.ts` (blocks Marketing→opted-out, allows
+  Utility→opted-out, allows Marketing→opted-in), and 11 new cases in
+  `inbound-pipeline.test.ts` for the STOP-keyword matcher (every
+  configured keyword, substring-must-not-match, unrelated/null/empty
+  text).
+- Full suite after this round: **910 passed / 3 failed / 913 total**
+  (same pre-existing `currency.test.ts` failures) — 0 regressions.
+  `npm run typecheck` clean.
 
 ## Real Gupshup sandbox E2E
 

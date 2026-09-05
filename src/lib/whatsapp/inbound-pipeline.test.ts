@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { isValidStatusTransition, handleStatusUpdate } from './inbound-pipeline'
+import { isValidStatusTransition, handleStatusUpdate, applyStopKeywordIfMatched } from './inbound-pipeline'
 
 vi.mock('@/lib/webhooks/deliver', () => ({ dispatchWebhookEvent: vi.fn() }))
 
@@ -90,5 +90,44 @@ describe('handleStatusUpdate', () => {
     await handleStatusUpdate(db, { providerMessageId: 'wamid.1', status: 'read', timestampMs: 1700000000000 })
     const messageUpdate = updates.find((u) => u.table === 'messages')
     expect(messageUpdate?.row.status).toBe('read')
+  })
+})
+
+describe('applyStopKeywordIfMatched (system-default STOP, requirement #39)', () => {
+  function mockContactsDb() {
+    const updates: Record<string, unknown>[] = []
+    const db = {
+      from: () => ({
+        update: (row: Record<string, unknown>) => {
+          updates.push(row)
+          return { eq: () => ({ eq: async () => ({ error: null }) }) }
+        },
+      }),
+    } as unknown as SupabaseClient
+    return { db, updates }
+  }
+
+  it.each(['stop', 'STOP', ' Stop ', 'unsubscribe', 'remove', 'стоп', 'отписка', 'не пишите', 'НЕ ПИШИТЕ'])(
+    'opts a contact out on an exact (trimmed, case-insensitive) match: %j',
+    async (text) => {
+      const { db, updates } = mockContactsDb()
+      await applyStopKeywordIfMatched(db, 'acc-1', 'c1', text)
+      expect(updates).toHaveLength(1)
+      expect(updates[0]).toMatchObject({ wa_marketing_status: 'OPTED_OUT', wa_consent_source: 'stop_keyword' })
+    },
+  )
+
+  it('does not fire on a sentence that merely contains a keyword as a substring', async () => {
+    const { db, updates } = mockContactsDb()
+    await applyStopKeywordIfMatched(db, 'acc-1', 'c1', "please don't stop the shipment")
+    expect(updates).toHaveLength(0)
+  })
+
+  it('does not fire on unrelated text or null/empty content', async () => {
+    const { db, updates } = mockContactsDb()
+    await applyStopKeywordIfMatched(db, 'acc-1', 'c1', 'hello there')
+    await applyStopKeywordIfMatched(db, 'acc-1', 'c1', null)
+    await applyStopKeywordIfMatched(db, 'acc-1', 'c1', '')
+    expect(updates).toHaveLength(0)
   })
 })

@@ -206,7 +206,8 @@ interface CapturedWrites {
  */
 function sendPathDb(
   templateRows: unknown[],
-  captured: CapturedWrites
+  captured: CapturedWrites,
+  contactMarketingStatus: string | null = null,
 ): SupabaseClient {
   const conversation = {
     id: 'cv-1',
@@ -231,7 +232,15 @@ function sendPathDb(
           if (table === 'conversations') captured.conversation = row;
           return builder;
         },
-        maybeSingle: async () => ({ data: null, error: null }),
+        maybeSingle: async () => {
+          if (table === 'contacts') {
+            return {
+              data: contactMarketingStatus ? { wa_marketing_status: contactMarketingStatus } : null,
+              error: null,
+            };
+          }
+          return { data: null, error: null };
+        },
         single: async () => {
           if (table === 'conversations') {
             return { data: conversation, error: null };
@@ -344,5 +353,42 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
     // name rather than inventing a body.
     expect(captured.message?.content_text).toBeNull();
     expect(captured.conversation?.last_message_text).toBe('[template]');
+  });
+});
+
+const MARKETING_TEMPLATE_ROW = { ...TEMPLATE_ROW, id: 'tpl-2', category: 'Marketing' };
+
+describe('sendMessageToConversation — marketing suppression', () => {
+  it('blocks a Marketing-category template to an opted-out contact', async () => {
+    const captured: CapturedWrites = {};
+    await expect(
+      sendMessageToConversation(
+        sendPathDb([MARKETING_TEMPLATE_ROW], captured, 'OPTED_OUT'),
+        'acct-1',
+        { conversationId: 'cv-1', messageType: 'template', templateName: 'order_update', templateParams: ['A123'] },
+      ),
+    ).rejects.toMatchObject({ code: 'marketing_suppressed', status: 403 });
+    expect(captured.message).toBeUndefined();
+  });
+
+  it('allows a Utility-category template to the same opted-out contact', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured, 'OPTED_OUT'), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'template',
+      templateName: 'order_update',
+      templateParams: ['A123', 'Friday'],
+    });
+    expect(captured.message).toBeDefined();
+  });
+
+  it('allows a Marketing-category template to a non-opted-out contact', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(
+      sendPathDb([MARKETING_TEMPLATE_ROW], captured, 'OPTED_IN'),
+      'acct-1',
+      { conversationId: 'cv-1', messageType: 'template', templateName: 'order_update', templateParams: ['A123'] },
+    );
+    expect(captured.message).toBeDefined();
   });
 });

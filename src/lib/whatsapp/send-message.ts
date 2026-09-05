@@ -30,6 +30,7 @@ import {
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { resolveWhatsAppProvider, ProviderError } from '@/lib/whatsapp/providers/resolve';
+import { assertMarketingAllowed, MarketingSuppressedError } from '@/lib/whatsapp/suppression';
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -331,6 +332,20 @@ export async function sendMessageToConversation(
     }
     templateRow = resolved.row;
     sendLanguage = resolved.language;
+
+    // Hard suppression: a Marketing-category template can never reach a
+    // contact who has opted out, regardless of who is sending it — the
+    // dashboard composer, an agent, or the public API. Utility/
+    // Authentication templates and free-form replies are unaffected;
+    // opting out of marketing doesn't cut off an active conversation.
+    try {
+      await assertMarketingAllowed(db, contact.id, templateRow?.category);
+    } catch (err) {
+      if (err instanceof MarketingSuppressedError) {
+        throw new SendMessageError('marketing_suppressed', err.message, 403);
+      }
+      throw err;
+    }
   }
 
   const attempt = async (phone: string): Promise<string> => {

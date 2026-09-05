@@ -241,6 +241,57 @@ export async function flagBroadcastReplyIfAny(
 }
 
 /**
+ * System-default STOP keyword — this is NOT a user-configured
+ * automation, it always runs, for every account, both providers,
+ * regardless of whether the account has any automations at all. An
+ * exact (trimmed, case-insensitive) match on the inbound message text
+ * against this list flips `wa_marketing_status` to `OPTED_OUT`
+ * immediately, feeding the same suppression check every broadcast/
+ * template-send path already enforces. Matched on the *whole* message
+ * rather than a substring so a sentence that merely contains one of
+ * these words ("please don't stop the shipment") doesn't false-positive.
+ *
+ * A user-configured keyword automation (update_contact_field →
+ * wa_marketing_status) still works alongside this and can extend the
+ * keyword list per-account; this is the floor, not a replacement.
+ */
+const STOP_KEYWORDS = new Set([
+  'STOP',
+  'UNSUBSCRIBE',
+  'REMOVE',
+  'СТОП',
+  'ОТПИСКА',
+  'НЕ ПИШИТЕ',
+])
+
+export async function applyStopKeywordIfMatched(
+  db: SupabaseClient,
+  accountId: string,
+  contactId: string,
+  contentText: string | null,
+): Promise<void> {
+  const normalized = (contentText ?? '').trim().toUpperCase()
+  if (!normalized || !STOP_KEYWORDS.has(normalized)) return
+
+  try {
+    const { error } = await db
+      .from('contacts')
+      .update({
+        wa_marketing_status: 'OPTED_OUT',
+        wa_opt_out_at: new Date().toISOString(),
+        wa_consent_source: 'stop_keyword',
+      })
+      .eq('id', contactId)
+      .eq('account_id', accountId)
+    if (error) {
+      console.error('[inbound-pipeline] STOP-keyword opt-out write failed:', error.message)
+    }
+  } catch (err) {
+    console.error('[inbound-pipeline] applyStopKeywordIfMatched failed:', err)
+  }
+}
+
+/**
  * Resolve a provider-side message_id into the matching internal UUID,
  * scoped to one conversation. Returns null when we never received the
  * parent (e.g. a swipe-reply to a message older than this CRM install).
@@ -570,6 +621,12 @@ export async function finishProcessingInboundMessage(
   await reopenClosedConversation(db, conversation)
 
   await flagBroadcastReplyIfAny(db, accountId, contactRecord.id)
+
+  // System-default STOP keyword — always on, provider-independent, not
+  // dependent on the account having configured any automation. Runs
+  // before flows/automations dispatch so opt-out takes effect even on
+  // an account with zero automations configured.
+  await applyStopKeywordIfMatched(db, accountId, contactRecord.id, msg.contentText)
 
   const flowResult = await dispatchInboundToFlows({
     accountId,
