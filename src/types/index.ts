@@ -272,13 +272,26 @@ export interface MessageReaction {
   created_at: string;
 }
 
+export type WhatsAppProviderId = 'meta' | 'gupshup';
+
 export interface WhatsAppConfig {
   id: string;
   user_id: string;
-  phone_number_id: string;
+  /** Which WhatsApp API this account's WhatsApp connection is on. Defaults to 'meta' for every pre-existing row. */
+  provider: WhatsAppProviderId;
+  /** Meta-only from here down — null on a Gupshup-only row. */
+  phone_number_id?: string;
   waba_id?: string;
-  access_token: string;
+  access_token?: string;
   verify_token?: string;
+  /** Gupshup-only from here down — null on a Meta-only row. */
+  gupshup_api_key?: string;
+  gupshup_app_id?: string;
+  gupshup_app_name?: string;
+  gupshup_source_phone_number?: string;
+  gupshup_connected_at?: string;
+  /** Random per-account secret path segment for the Gupshup inbound webhook URL — see docs/GUPSHUP_INTEGRATION.md (no HMAC signature exists on Gupshup callbacks). */
+  gupshup_webhook_token?: string;
   status: 'connected' | 'disconnected';
   connected_at?: string;
   /**
@@ -341,6 +354,8 @@ export interface MessageTemplate {
   sample_values?: TemplateSampleValues;
   status?: MessageTemplateStatus;
   meta_template_id?: string;
+  /** Gupshup's own template id — set when this row was synced/sent via the Gupshup provider. */
+  gupshup_template_id?: string;
   rejection_reason?: string;
   quality_score?: 'GREEN' | 'YELLOW' | 'RED';
   submission_error?: string;

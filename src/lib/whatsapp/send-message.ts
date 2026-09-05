@@ -21,14 +21,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import {
-  sendTextMessage,
-  sendTemplateMessage,
-  sendMediaMessage,
-  sendInteractiveButtons,
-  sendInteractiveList,
-  type MediaKind,
-} from '@/lib/whatsapp/meta-api';
+import type { MediaKind } from '@/lib/whatsapp/meta-api';
 import {
   validateInteractivePayload,
   interactivePayloadPreviewText,
@@ -36,6 +29,7 @@ import {
 } from '@/lib/whatsapp/interactive';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
+import { resolveWhatsAppProvider, ProviderError } from '@/lib/whatsapp/providers/resolve';
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -266,13 +260,14 @@ export async function sendMessageToConversation(
     );
   }
 
-  const accessToken = decrypt(config.access_token);
-
-  // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
-  if (isLegacyFormat(config.access_token)) {
+  // Self-heal legacy CBC ciphertexts on the Meta access_token specifically
+  // (Gupshup's api_key was never stored under the old CBC format, since it
+  // didn't exist yet). Fire-and-forget; idempotent.
+  if (config.access_token && isLegacyFormat(config.access_token)) {
+    const upgraded = encrypt(decrypt(config.access_token));
     void db
       .from('whatsapp_config')
-      .update({ access_token: encrypt(accessToken) })
+      .update({ access_token: upgraded })
       .eq('id', config.id)
       .then(({ error }: { error: { message: string } | null }) => {
         if (error) {
@@ -283,6 +278,8 @@ export async function sendMessageToConversation(
         }
       });
   }
+
+  const provider = resolveWhatsAppProvider(config);
 
   // Resolve the reply target to its Meta message_id. The parent must
   // belong to this same conversation — otherwise a caller could quote
@@ -338,9 +335,7 @@ export async function sendMessageToConversation(
 
   const attempt = async (phone: string): Promise<string> => {
     if (messageType === 'template') {
-      const result = await sendTemplateMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const result = await provider.sendTemplate({
         to: phone,
         templateName: templateName!,
         language: sendLanguage,
@@ -352,9 +347,7 @@ export async function sendMessageToConversation(
       return result.messageId;
     }
     if (isMediaKind) {
-      const result = await sendMediaMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const result = await provider.sendMedia({
         to: phone,
         kind: messageType as MediaKind,
         link: mediaUrl!,
@@ -367,34 +360,34 @@ export async function sendMessageToConversation(
     if (messageType === 'interactive') {
       const p = interactivePayload!;
       if (p.kind === 'buttons') {
-        const result = await sendInteractiveButtons({
-          phoneNumberId: config.phone_number_id,
-          accessToken,
+        const result = await provider.sendInteractive({
           to: phone,
-          bodyText: p.body,
-          headerText: p.header || undefined,
-          footerText: p.footer || undefined,
-          buttons: p.buttons,
           contextMessageId,
+          payload: {
+            kind: 'buttons',
+            bodyText: p.body,
+            headerText: p.header || undefined,
+            footerText: p.footer || undefined,
+            buttons: p.buttons,
+          },
         });
         return result.messageId;
       }
-      const result = await sendInteractiveList({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const result = await provider.sendInteractive({
         to: phone,
-        bodyText: p.body,
-        buttonLabel: p.button_label,
-        headerText: p.header || undefined,
-        footerText: p.footer || undefined,
-        sections: p.sections,
         contextMessageId,
+        payload: {
+          kind: 'list',
+          bodyText: p.body,
+          buttonLabel: p.button_label,
+          headerText: p.header || undefined,
+          footerText: p.footer || undefined,
+          sections: p.sections,
+        },
       });
       return result.messageId;
     }
-    const result = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const result = await provider.sendText({
       to: phone,
       text: contentText!,
       contextMessageId,
@@ -402,8 +395,10 @@ export async function sendMessageToConversation(
     return result.messageId;
   };
 
-  // Send via Meta — retry across phone-number variants if Meta rejects
-  // with "recipient not in allowed list"; persist a working variant
+  // Send via the account's provider — retry across phone-number variants
+  // if the provider rejects with a "recipient not in allowed list"-style
+  // error (a Meta sandbox restriction; harmless no-op retry heuristic for
+  // Gupshup, which doesn't have this concept); persist a working variant
   // back to the contact so the next send goes straight through.
   let waMessageId = '';
   let workingPhone = sanitizedPhone;
@@ -424,17 +419,21 @@ export async function sendMessageToConversation(
         }
         lastError = err;
         console.warn(
-          `[send-message] variant "${variant}" rejected by Meta, trying next…`
+          `[send-message] variant "${variant}" rejected by ${provider.id}, trying next…`
         );
       }
     }
 
     if (lastError) throw lastError;
   } catch (err) {
+    if (err instanceof ProviderError) {
+      console.error(`[send-message] ${err.provider} send failed:`, err.message);
+      throw new SendMessageError(err.code, err.message, err.httpStatus ?? 502);
+    }
     const message =
-      err instanceof Error ? err.message : 'Unknown Meta API error';
-    console.error('[send-message] Meta send failed for all variants:', message);
-    throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
+      err instanceof Error ? err.message : 'Unknown provider error';
+    console.error(`[send-message] ${provider.id} send failed for all variants:`, message);
+    throw new SendMessageError('provider_error', `${provider.id} API error: ${message}`, 502);
   }
 
   if (workingPhone !== sanitizedPhone) {

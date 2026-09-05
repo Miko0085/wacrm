@@ -1,10 +1,8 @@
-import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
 } from '@/lib/flows/meta-send'
-import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -15,17 +13,20 @@ import {
   resolveTemplateRow,
   templateContentText,
 } from '@/lib/whatsapp/template-body'
+import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
-// Automation-side Meta sender.
+// Automation-side sender.
 //
 // Mirrors the logic in src/app/api/whatsapp/send/route.ts but uses
 // the service-role client (engine has no cookies) and accepts the
 // user / conversation / contact identifiers the engine already has
 // on hand. Kept here (rather than refactoring the user-facing send
 // route) to avoid risk to the working manual-send path — they can
-// converge in a later refactor.
+// converge in a later refactor. Sends through the account's
+// configured provider (Meta or Gupshup) via resolveWhatsAppProvider —
+// same as every other send path.
 // ------------------------------------------------------------
 
 interface SendTextArgs {
@@ -144,12 +145,12 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = resolveWhatsAppProvider(config)
 
   // Local template row — read for the body we persist below, not for
-  // the Meta payload (the wire shape is deliberately unchanged here).
-  // A missing row is fine: the send still goes out, we just can't
-  // reconstruct the text the customer saw.
+  // the provider payload (the wire shape is built by the provider
+  // adapter). A missing row is fine: the send still goes out, we just
+  // can't reconstruct the text the customer saw.
   const templateRow =
     input.kind === 'template'
       ? (
@@ -164,22 +165,16 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
 
   const attempt = async (phone: string): Promise<string> => {
     if (input.kind === 'template') {
-      const r = await sendTemplateMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const r = await provider.sendTemplate({
         to: phone,
         templateName: input.templateName,
         language: input.language,
+        template: templateRow ?? undefined,
         params: input.params,
       })
       return r.messageId
     }
-    const r = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
-      to: phone,
-      text: input.text,
-    })
+    const r = await provider.sendText({ to: phone, text: input.text })
     return r.messageId
   }
 

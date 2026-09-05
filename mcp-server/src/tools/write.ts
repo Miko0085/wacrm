@@ -14,7 +14,7 @@ import { handle, jsonResult } from './shared.js';
 
 const templateSchema = z
   .object({
-    name: z.string().describe('Meta-approved template name.'),
+    name: z.string().describe('Approved template name (Meta or Gupshup, whichever provider this account is connected to).'),
     language: z.string().describe('Template language code, e.g. "en_US".'),
     params: z
       .array(z.string())

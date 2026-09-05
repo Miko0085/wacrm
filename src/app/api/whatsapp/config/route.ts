@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
@@ -7,6 +8,8 @@ import {
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
+import { createGupshupProvider } from '@/lib/whatsapp/providers/gupshup-provider'
+import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -87,7 +90,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, access_token, status')
+      .select('*')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -100,6 +103,39 @@ export async function GET() {
     }
 
     if (!config) {
+      return NextResponse.json(
+        {
+          connected: false,
+          reason: 'no_config',
+          message: 'No WhatsApp configuration saved yet. Fill in the form and click Save Configuration.',
+        },
+        { status: 200 }
+      )
+    }
+
+    // Gupshup path — same "real server-side check" contract as Meta
+    // below (testConnection() hits Gupshup's business-details endpoint),
+    // just a different provider and no legacy-token-format concern.
+    if (config.provider === 'gupshup') {
+      try {
+        const provider = resolveWhatsAppProvider(config)
+        const result = await provider.testConnection()
+        return NextResponse.json(
+          result.connected
+            ? { connected: true, phone_info: result.details }
+            : { connected: false, reason: 'gupshup_api_error', message: result.message },
+        )
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown Gupshup API error'
+        console.error('[whatsapp/config GET] Gupshup verification failed:', message)
+        return NextResponse.json(
+          { connected: false, reason: 'gupshup_api_error', message },
+          { status: 200 },
+        )
+      }
+    }
+
+    if (!config.phone_number_id || !config.access_token) {
       return NextResponse.json(
         {
           connected: false,
@@ -185,6 +221,11 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
+
+    if (body.provider === 'gupshup') {
+      return saveGupshupConfig(supabase, accountId, user.id, body)
+    }
+
     const { phone_number_id, waba_id, access_token, verify_token, pin } = body
 
     if (!access_token || !phone_number_id) {
@@ -354,6 +395,7 @@ export async function POST(request: Request) {
     // store the credentials and the error so the UI can guide the
     // user through a retry.
     const baseRow = {
+      provider: 'meta',
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
@@ -429,6 +471,122 @@ export async function POST(request: Request) {
     console.error('Error in WhatsApp config POST:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
+}
+
+/**
+ * Gupshup branch of POST /api/whatsapp/config.
+ *
+ * Mirrors the Meta branch's shape (verify with the provider BEFORE
+ * saving, encrypt the secret, one row per account) but Gupshup has no
+ * phone-registration/WABA-subscription step to run — a saved,
+ * verified row is immediately "live" once the webhook URL is pasted
+ * into the Gupshup dashboard (see docs/GUPSHUP_INTEGRATION.md).
+ */
+async function saveGupshupConfig(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  accountId: string,
+  userId: string,
+  body: {
+    gupshup_api_key?: string
+    gupshup_app_id?: string
+    gupshup_app_name?: string
+    gupshup_source_phone_number?: string
+  },
+) {
+  const appId = (body.gupshup_app_id || '').trim()
+  const appName = (body.gupshup_app_name || '').trim()
+  const sourceNumber = (body.gupshup_source_phone_number || '').replace(/\D/g, '')
+
+  if (!appId || !sourceNumber) {
+    return NextResponse.json(
+      { error: 'gupshup_app_id and gupshup_source_phone_number are required' },
+      { status: 400 },
+    )
+  }
+
+  const { data: existing } = await supabase
+    .from('whatsapp_config')
+    .select('id, gupshup_api_key, gupshup_webhook_token')
+    .eq('account_id', accountId)
+    .maybeSingle()
+
+  // Reuse the stored, already-encrypted key when the caller didn't
+  // supply a new one (same "leave the masked field untouched" UX as
+  // the Meta access_token — see whatsapp-config.tsx).
+  let apiKeyPlaintext: string
+  let encryptedApiKey: string
+  if (body.gupshup_api_key?.trim()) {
+    apiKeyPlaintext = body.gupshup_api_key.trim()
+    encryptedApiKey = encrypt(apiKeyPlaintext)
+  } else if (existing?.gupshup_api_key) {
+    try {
+      apiKeyPlaintext = decrypt(existing.gupshup_api_key)
+    } catch {
+      return NextResponse.json(
+        { error: 'The stored Gupshup API key cannot be decrypted — please re-enter it.' },
+        { status: 400 },
+      )
+    }
+    encryptedApiKey = existing.gupshup_api_key
+  } else {
+    return NextResponse.json(
+      { error: 'gupshup_api_key is required for initial setup' },
+      { status: 400 },
+    )
+  }
+
+  // Verify with Gupshup BEFORE saving — same principle as the Meta
+  // branch's verifyPhoneNumber call: never persist credentials we
+  // haven't confirmed actually work.
+  const testResult = await createGupshupProvider({
+    apiKey: apiKeyPlaintext,
+    appId,
+    appName,
+    sourceNumber,
+  }).testConnection()
+  if (!testResult.connected) {
+    return NextResponse.json(
+      { error: `Gupshup rejected the credentials: ${testResult.message}` },
+      { status: 400 },
+    )
+  }
+
+  // Webhook URL carries a per-account secret token (Gupshup callbacks
+  // have no HMAC signature to verify against) — generate it once, keep
+  // it stable across re-saves so a previously-registered callback URL
+  // doesn't silently break.
+  const webhookToken = existing?.gupshup_webhook_token || crypto.randomBytes(24).toString('hex')
+
+  const row = {
+    account_id: accountId,
+    user_id: userId,
+    provider: 'gupshup' as const,
+    gupshup_api_key: encryptedApiKey,
+    gupshup_app_id: appId,
+    gupshup_app_name: appName,
+    gupshup_source_phone_number: sourceNumber,
+    gupshup_webhook_token: webhookToken,
+    gupshup_connected_at: new Date().toISOString(),
+    status: 'connected' as const,
+    connected_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+
+  const { error: writeError } = existing
+    ? await supabase.from('whatsapp_config').update(row).eq('account_id', accountId)
+    : await supabase.from('whatsapp_config').insert(row)
+
+  if (writeError) {
+    console.error('Error saving Gupshup whatsapp_config:', writeError)
+    return NextResponse.json({ error: 'Failed to save configuration' }, { status: 500 })
+  }
+
+  return NextResponse.json({
+    success: true,
+    saved: true,
+    registered: true,
+    phone_info: testResult.details,
+  })
 }
 
 /**

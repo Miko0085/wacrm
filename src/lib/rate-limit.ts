@@ -173,6 +173,13 @@ export const RATE_LIMITS = {
    *  capping a stampede; excess inbounds simply don't get an auto-reply
    *  (they still land in the inbox for a human). */
   aiAutoReplyAccount: { limit: 30, windowMs: 60_000 },
+  /** Gupshup inbound webhook, keyed per account's secret webhook token.
+   *  Gupshup has no HMAC signature to verify callbacks against (unlike
+   *  Meta's x-hub-signature-256) — the token in the URL path IS the
+   *  security boundary, so this bucket is deliberately generous (a busy
+   *  shared inbox can see many inbound + status callbacks per minute)
+   *  but still bounds a flood against a leaked/guessed token. */
+  gupshupWebhook: { limit: 600, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't

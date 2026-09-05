@@ -66,11 +66,17 @@ function makeDb(rpcResult: { data: unknown; error: unknown }) {
             eq: () => ({
               single: () =>
                 Promise.resolve({
-                  data: { phone_number_id: 'pn-1', access_token: 'enc' },
+                  data: { provider: 'meta', phone_number_id: 'pn-1', access_token: 'enc' },
                   error: null,
                 }),
             }),
           }),
+        };
+      }
+      if (table === 'contacts') {
+        // Opt-out suppression check — no contact is opted out in these tests.
+        return {
+          select: () => ({ in: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }),
         };
       }
       if (table === 'message_templates') {

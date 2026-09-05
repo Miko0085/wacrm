@@ -152,6 +152,16 @@ export async function POST(request: Request) {
           { status: 400 },
         )
       }
+
+      if (config.provider === 'gupshup') {
+        return NextResponse.json(
+          {
+            error:
+              'Creating templates isn\'t supported for Gupshup yet — create the template in your Gupshup dashboard, then use "Sync from Gupshup" here to pull it in.',
+          },
+          { status: 400 },
+        )
+      }
       if (!config.waba_id) {
         return NextResponse.json(
           {

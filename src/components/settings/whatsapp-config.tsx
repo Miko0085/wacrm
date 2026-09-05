@@ -30,12 +30,13 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
+import type { WhatsAppConfig as WhatsAppConfigType, WhatsAppProviderId } from '@/types';
+import { GupshupConfigForm } from './gupshup-config-form';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
-type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
+type ResetReason = 'token_corrupted' | 'meta_api_error' | 'gupshup_api_error' | null;
 
 export function WhatsAppConfig() {
   const t = useTranslations('Settings.whatsapp');
@@ -69,6 +70,11 @@ export function WhatsAppConfig() {
   // tab regains focus. Without this, that churn calls fetchConfig()
   // again and overwrites whatever the user typed but hadn't saved yet.
   const loadedAccountIdRef = useRef<string | null>(null);
+
+  // Which WhatsApp API this account is connected through. Defaults to
+  // 'meta' for a brand-new (never-configured) account, and is set from
+  // the loaded row's own `provider` column otherwise — see fetchConfig.
+  const [provider, setProvider] = useState<WhatsAppProviderId>('meta');
 
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [wabaId, setWabaId] = useState('');
@@ -132,6 +138,7 @@ export function WhatsAppConfig() {
 
       if (data) {
         setConfig(data);
+        setProvider(data.provider === 'gupshup' ? 'gupshup' : 'meta');
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
         setAccessToken(MASKED_TOKEN);
@@ -431,12 +438,62 @@ export function WhatsAppConfig() {
 
   const showResetBanner = resetReason === 'token_corrupted';
 
+  function handleSelectProvider(next: WhatsAppProviderId) {
+    if (next === provider) return;
+    // Both providers' credentials live on the same whatsapp_config row
+    // and switching only flips which one is active — nothing is
+    // deleted, so a switch (and switching back) is always safe. Still
+    // confirm, since it changes where the NEXT outbound/inbound message
+    // goes with immediate effect.
+    if (
+      config &&
+      !confirm(
+        'Existing conversation and campaign history will remain. Future WhatsApp messages will use ' +
+          (next === 'gupshup' ? 'Gupshup' : 'Meta Cloud API') +
+          '. Continue?',
+      )
+    ) {
+      return;
+    }
+    setProvider(next);
+  }
+
   return (
     <section className="animate-in fade-in-50 duration-200">
       <SettingsPanelHead
         title={t("title")}
         description={t("description")}
       />
+
+      {/* Provider selector — Meta and Gupshup credentials both live on
+          the same whatsapp_config row (see migration 040); this only
+          picks which one is active. */}
+      <div className="mb-6 inline-flex rounded-md border border-border bg-muted p-1">
+        {(['meta', 'gupshup'] as const).map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => handleSelectProvider(p)}
+            disabled={!canEditSettings}
+            className={
+              'rounded px-3 py-1.5 text-sm font-medium transition-colors ' +
+              (provider === p
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground')
+            }
+          >
+            {p === 'meta' ? 'Meta Cloud API' : 'Gupshup'}
+          </button>
+        ))}
+      </div>
+
+      {provider === 'gupshup' ? (
+        <GupshupConfigForm
+          canEditSettings={Boolean(canEditSettings)}
+          config={config}
+          onSaved={() => accountId && fetchConfig(accountId)}
+        />
+      ) : (
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
       {/* Main config form */}
       <div className="space-y-6">
@@ -916,6 +973,7 @@ export function WhatsAppConfig() {
         </Card>
       </div>
     </div>
+    )}
     </section>
   );
 }

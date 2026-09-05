@@ -91,12 +91,22 @@ export async function PATCH(
     // meta_template_id and status — fetch explicitly.
     const { data: existing, error: lookupErr } = await supabase
       .from('message_templates')
-      .select('id, name, status, meta_template_id, language')
+      .select('id, name, status, meta_template_id, language, provider')
       .eq('id', id)
       .eq('account_id', accountId)
       .maybeSingle()
     if (lookupErr || !existing) {
       return NextResponse.json({ error: 'Template not found.' }, { status: 404 })
+    }
+
+    if (existing.provider === 'gupshup') {
+      return NextResponse.json(
+        {
+          error:
+            'Editing templates isn\'t supported for Gupshup yet — edit it in your Gupshup dashboard, then use "Sync from Gupshup" to pull the change in.',
+        },
+        { status: 400 },
+      )
     }
 
     if (!existing.meta_template_id) {

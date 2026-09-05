@@ -19,7 +19,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { BroadcastError, type BroadcastPlan } from '@/lib/whatsapp/broadcast-core';
-import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 
@@ -115,16 +114,24 @@ export interface ResumePlan {
   unsendable: number;
 }
 
+interface RecipientContact {
+  phone?: string | null;
+  wa_marketing_status?: string | null;
+}
+
 interface RecipientRow {
   id: string;
   template_params: unknown;
-  contact: { phone?: string | null } | { phone?: string | null }[] | null;
+  contact: RecipientContact | RecipientContact[] | null;
 }
 
 /** Supabase renders an embedded to-one join as an object or a 1-array. */
+function joinedContact(row: RecipientRow): RecipientContact | null {
+  return Array.isArray(row.contact) ? (row.contact[0] ?? null) : row.contact;
+}
+
 function contactPhone(row: RecipientRow): string | null {
-  const c = Array.isArray(row.contact) ? row.contact[0] : row.contact;
-  return c?.phone ?? null;
+  return joinedContact(row)?.phone ?? null;
 }
 
 /**
@@ -158,7 +165,7 @@ export async function planBroadcastResume(
   const statuses = scopeStatuses(scope);
   const { data: rawRows, error: recError } = await db
     .from('broadcast_recipients')
-    .select('id, template_params, contact:contacts(phone)')
+    .select('id, template_params, contact:contacts(phone, wa_marketing_status)')
     .eq('broadcast_id', broadcastId)
     .in('status', statuses)
     // Oldest first, so repeated capped passes chew through the backlog
@@ -172,15 +179,24 @@ export async function planBroadcastResume(
 
   const rows = (rawRows ?? []) as RecipientRow[];
 
-  // A recipient whose contact has no usable phone can never send. Stamp
-  // it failed now: leaving it 'pending' would keep the broadcast in
-  // 'sending' forever, which is the very symptom being fixed.
+  // A recipient whose contact has no usable phone, or who opted out of
+  // WhatsApp marketing since the original send, can never go out. Stamp
+  // both failed now: leaving them 'pending' would keep the broadcast in
+  // 'sending' forever, which is the very symptom being fixed. Suppression
+  // is re-checked here (not just at create time) because opt-out can
+  // arrive at any point between the original send and a resume.
   const sendable: RecipientRow[] = [];
   const unsendable: string[] = [];
+  const suppressed: string[] = [];
   for (const row of rows) {
     const sanitized = sanitizePhoneForMeta(contactPhone(row) ?? '');
-    if (isValidE164(sanitized)) sendable.push(row);
-    else unsendable.push(row.id);
+    if (joinedContact(row)?.wa_marketing_status === 'OPTED_OUT') {
+      suppressed.push(row.id);
+    } else if (isValidE164(sanitized)) {
+      sendable.push(row);
+    } else {
+      unsendable.push(row.id);
+    }
   }
   if (unsendable.length > 0) {
     await db
@@ -190,6 +206,15 @@ export async function planBroadcastResume(
         error_message: 'No valid phone number on contact',
       })
       .in('id', unsendable);
+  }
+  if (suppressed.length > 0) {
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'failed',
+        error_message: 'Contact has opted out of WhatsApp marketing messages',
+      })
+      .in('id', suppressed);
   }
 
   const slice = sendable.slice(0, RESUME_MAX_PER_REQUEST);
@@ -236,8 +261,7 @@ export async function planBroadcastResume(
     broadcastId,
     templateName: broadcast.template_name,
     templateLanguage: resolvedTemplate.language,
-    phoneNumberId: config.phone_number_id,
-    accessToken: decrypt(config.access_token),
+    config,
     templateRow: resolvedTemplate.row,
     planned: slice.map((row) => ({
       recipientRowId: row.id,
@@ -249,7 +273,7 @@ export async function planBroadcastResume(
     rejected: 0,
   };
 
-  return { plan, remaining, unsendable: unsendable.length };
+  return { plan, remaining, unsendable: unsendable.length + suppressed.length };
 }
 
 /**

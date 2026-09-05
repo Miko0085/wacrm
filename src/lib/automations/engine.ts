@@ -541,16 +541,32 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         return `custom field updated`
       }
 
-      const allowed = new Set(['name', 'email', 'company'])
+      const allowed = new Set(['name', 'email', 'company', 'wa_marketing_status'])
       if (!allowed.has(cfg.field)) {
         return `field ${cfg.field} not writable from automations`
       }
+      // wa_marketing_status also stamps its own timestamp column — this is
+      // what lets a "STOP"/"UNSUBSCRIBE" keyword automation (trigger:
+      // keyword_match → action: update_contact_field) suppress future
+      // broadcasts the exact same way a provider's native opt-out webhook
+      // event does (see src/lib/whatsapp/providers/gupshup-webhook.ts'
+      // applyUserEvent). The DB CHECK constraint (migration 040) rejects
+      // any value that isn't OPTED_IN/OPTED_OUT/UNKNOWN, so a typo'd
+      // automation config fails loudly rather than corrupting consent state.
+      const extra: Record<string, unknown> =
+        cfg.field === 'wa_marketing_status'
+          ? value === 'OPTED_OUT'
+            ? { wa_opt_out_at: new Date().toISOString(), wa_consent_source: 'automation_keyword' }
+            : value === 'OPTED_IN'
+              ? { wa_opt_in_at: new Date().toISOString(), wa_consent_source: 'automation_keyword' }
+              : {}
+          : {}
       // Defense in depth: scope the service-role write to the account so
       // a future caller that skips the entry-point ownership guard still
       // cannot write across tenants.
       await db
         .from('contacts')
-        .update({ [cfg.field]: value, updated_at: new Date().toISOString() })
+        .update({ [cfg.field]: value, updated_at: new Date().toISOString(), ...extra })
         .eq('id', args.contactId)
         .eq('account_id', args.automation.account_id)
       return `${cfg.field} updated`

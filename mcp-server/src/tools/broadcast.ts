@@ -23,7 +23,7 @@ export function registerBroadcastTools(server: McpServer, client: WacrmClient): 
         'Launch a template broadcast to a list of recipients (up to 1000). This sends a real WhatsApp template message to every recipient — a mass, irreversible action. You MUST set confirm=true, and you should show the full recipient list and template to the user for approval before calling. The call returns fast; poll get_broadcast for delivery progress.',
       inputSchema: {
         name: z.string().describe('A name for this broadcast campaign (for your own reference).'),
-        template_name: z.string().describe('Meta-approved template name.'),
+        template_name: z.string().describe('Approved template name (Meta or Gupshup, whichever provider this account is connected to).'),
         template_language: z.string().describe('Template language code, e.g. "en_US".'),
         recipients: z
           .array(

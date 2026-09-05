@@ -935,6 +935,7 @@
         "name": "Name",
         "email": "Email",
         "company": "Company",
+        "waMarketingStatus": "WhatsApp marketing status (OPTED_IN / OPTED_OUT / UNKNOWN)",
         "customFields": "Custom fields",
         "unknown": "{id} (unknown field)"
       },

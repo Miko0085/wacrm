@@ -18,8 +18,6 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
-import { decrypt } from '@/lib/whatsapp/encryption';
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -27,8 +25,9 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
-import type { MessageTemplate } from '@/types';
+import type { MessageTemplate, WhatsAppConfig } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
+import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve';
 
 /** Thrown by createBroadcast on a caller-visible failure; route maps it. */
 export class BroadcastError extends Error {
@@ -66,8 +65,8 @@ export interface BroadcastPlan {
   broadcastId: string;
   templateName: string;
   templateLanguage: string;
-  phoneNumberId: string;
-  accessToken: string;
+  /** Raw whatsapp_config row — resolved into a provider at delivery time via resolveWhatsAppProvider(), so a plan built earlier always sends through whichever provider is configured NOW. */
+  config: WhatsAppConfig;
   templateRow: MessageTemplate | null;
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
@@ -109,7 +108,9 @@ export async function createBroadcast(
   }
 
   // Config (fail fast + provides the audit trail owner already resolved
-  // by the caller). Meta send needs phone_number_id + decrypted token.
+  // by the caller). Resolving the provider here (rather than only at
+  // delivery time) fails the whole create step loudly if credentials are
+  // missing/broken, instead of silently failing every recipient later.
   const { data: config, error: configError } = await db
     .from('whatsapp_config')
     .select('*')
@@ -122,7 +123,7 @@ export async function createBroadcast(
       400
     );
   }
-  const accessToken = decrypt(config.access_token);
+  resolveWhatsAppProvider(config);
 
   // Template row (once) for header/button components; guard a
   // malformed local row rather than N identical opaque failures.
@@ -183,6 +184,33 @@ export async function createBroadcast(
     );
   }
 
+  // Hard suppression: a contact who opted out of WhatsApp marketing
+  // (native Gupshup/Meta opt-out event, or the STOP-keyword automation)
+  // can never receive a broadcast/template send, regardless of who
+  // requests it — dashboard wizard, public API, or MCP. This is the one
+  // enforcement point every broadcast path funnels through
+  // (createBroadcast backs /api/v1/broadcasts and broadcast-resume;
+  // the dashboard route has its own identical check — see
+  // src/app/api/whatsapp/broadcast/route.ts). Folded into `rejected`
+  // rather than a new counter so the public API response shape is
+  // unchanged.
+  const { data: suppressedRows } = await db
+    .from('contacts')
+    .select('id')
+    .in('id', deduped.map((r) => r.contactId))
+    .eq('wa_marketing_status', 'OPTED_OUT');
+  const suppressedIds = new Set((suppressedRows ?? []).map((r: { id: string }) => r.id));
+  const eligible = deduped.filter((r) => !suppressedIds.has(r.contactId));
+  rejected += suppressedIds.size;
+
+  if (eligible.length === 0) {
+    throw new BroadcastError(
+      'bad_request',
+      'Every resolved recipient has opted out of WhatsApp marketing messages',
+      400
+    );
+  }
+
   // Persist the broadcast + its recipients. The count columns
   // (sent/delivered/read/replied/failed) are owned by the DB aggregate
   // trigger (migrations 003/005) and derived purely from
@@ -206,11 +234,11 @@ export async function createBroadcast(
       p_name: name || `API broadcast (${templateName})`,
       p_template_name: templateName,
       p_template_language: resolvedTemplate.language,
-      p_total_recipients: deduped.length,
-      p_contact_ids: deduped.map((r) => r.contactId),
+      p_total_recipients: eligible.length,
+      p_contact_ids: eligible.map((r) => r.contactId),
       // Frozen per-recipient params (migration 038) — without them a
       // resume of this broadcast has no way to reconstruct {{1}}.
-      p_template_params: deduped.map((r) => r.params),
+      p_template_params: eligible.map((r) => r.params),
     }
   );
   if (createErr || !createdRows || createdRows.length === 0) {
@@ -222,7 +250,7 @@ export async function createBroadcast(
 
   // Pair each inserted recipient row back to its phone/params by
   // contact_id — unambiguous now that duplicates are collapsed.
-  const byContact = new Map(deduped.map((r) => [r.contactId, r]));
+  const byContact = new Map(eligible.map((r) => [r.contactId, r]));
   const planned: PlannedRecipient[] = createdRows.map(
     (row: { recipient_id: string; contact_id: string }) => {
       const r = byContact.get(row.contact_id)!;
@@ -234,8 +262,7 @@ export async function createBroadcast(
     broadcastId,
     templateName,
     templateLanguage: resolvedTemplate.language,
-    phoneNumberId: config.phone_number_id,
-    accessToken,
+    config,
     templateRow,
     planned,
     rejected,
@@ -259,6 +286,7 @@ export async function deliverBroadcast(
   db: SupabaseClient,
   plan: BroadcastPlan
 ): Promise<void> {
+  const provider = resolveWhatsAppProvider(plan.config);
   for (const recipient of plan.planned) {
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
@@ -266,9 +294,7 @@ export async function deliverBroadcast(
 
     for (const variant of variants) {
       try {
-        const result = await sendTemplateMessage({
-          phoneNumberId: plan.phoneNumberId,
-          accessToken: plan.accessToken,
+        const result = await provider.sendTemplate({
           to: variant,
           templateName: plan.templateName,
           language: plan.templateLanguage,

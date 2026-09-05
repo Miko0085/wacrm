@@ -1,35 +1,30 @@
-import {
-  sendInteractiveButtons,
-  sendInteractiveList,
-  sendMediaMessage,
-  sendTextMessage,
-  type InteractiveButton,
-  type InteractiveListSection,
-  type MediaKind,
+import type {
+  InteractiveButton,
+  InteractiveListSection,
+  MediaKind,
 } from '@/lib/whatsapp/meta-api'
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
-import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   sanitizePhoneForMeta,
   isValidE164,
   phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
+import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
-// Flows-side Meta sender (interactive variants).
+// Flows-side sender (interactive variants).
 //
 // Mirrors src/lib/automations/meta-send.ts (engineSendText /
 // engineSendTemplate) but emits interactive button + list messages.
 // Kept separate from the automations file so the two engines don't
 // fight over each other's shape — once both stabilize, the
 // phone-variant retry + DB persistence are obvious extraction
-// candidates into a shared base.
-//
-// PR #1 ships this in isolation: callers don't exist yet. PR #2
-// brings the flow runner online and wires it up. Shipping it now
-// keeps the foundation PR self-contained and unit-testable.
+// candidates into a shared base. Sends through the account's
+// configured provider via resolveWhatsAppProvider, same as every
+// other send path — also the sender AI auto-reply (ai/auto-reply.ts)
+// uses for its replies.
 // ------------------------------------------------------------
 
 interface SendTextEngineArgs {
@@ -91,15 +86,10 @@ export async function engineSendText(
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = resolveWhatsAppProvider(config)
 
   const attempt = async (phone: string): Promise<string> => {
-    const r = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
-      to: phone,
-      text: args.text,
-    })
+    const r = await provider.sendText({ to: phone, text: args.text })
     return r.messageId
   }
 
@@ -201,12 +191,10 @@ export async function engineSendMedia(
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = resolveWhatsAppProvider(config)
 
   const attempt = async (phone: string): Promise<string> => {
-    const r = await sendMediaMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const r = await provider.sendMedia({
       to: phone,
       kind: args.kind,
       link: args.link,
@@ -353,30 +341,32 @@ async function sendInteractiveViaMeta(
     throw new Error('WhatsApp not configured for this account')
   }
 
-  const accessToken = decrypt(config.access_token)
+  const provider = resolveWhatsAppProvider(config)
 
   const attempt = async (phone: string): Promise<string> => {
     if (input.kind === 'buttons') {
-      const r = await sendInteractiveButtons({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+      const r = await provider.sendInteractive({
         to: phone,
-        bodyText: input.bodyText,
-        buttons: input.buttons,
-        headerText: input.headerText,
-        footerText: input.footerText,
+        payload: {
+          kind: 'buttons',
+          bodyText: input.bodyText,
+          buttons: input.buttons,
+          headerText: input.headerText,
+          footerText: input.footerText,
+        },
       })
       return r.messageId
     }
-    const r = await sendInteractiveList({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+    const r = await provider.sendInteractive({
       to: phone,
-      bodyText: input.bodyText,
-      buttonLabel: input.buttonLabel,
-      sections: input.sections,
-      headerText: input.headerText,
-      footerText: input.footerText,
+      payload: {
+        kind: 'list',
+        bodyText: input.bodyText,
+        buttonLabel: input.buttonLabel,
+        sections: input.sections,
+        headerText: input.headerText,
+        footerText: input.footerText,
+      },
     })
     return r.messageId
   }

@@ -1,0 +1,316 @@
+# Gupshup Integration
+
+Gupshup is a first-class WhatsApp provider in WACRM, alongside the
+existing Meta Cloud API integration. Neither replaces the other —
+Settings → WhatsApp lets each account pick one; both keep working in
+parallel across different accounts on the same install, and an
+account can switch between them without losing any history.
+
+See also: [`GUPSHUP_INTEGRATION_AUDIT.md`](./GUPSHUP_INTEGRATION_AUDIT.md)
+(the pre-implementation coupling audit) and
+[`GUPSHUP_TEST_REPORT.md`](./GUPSHUP_TEST_REPORT.md) (what's been
+verified and how).
+
+## Architecture
+
+```
+WACRM business logic (send-message.ts, broadcast-core.ts,
+automations/meta-send.ts, flows/meta-send.ts, the config/template
+routes, the shared inbound pipeline)
+              │
+              ▼
+   resolveWhatsAppProvider(config)
+              │
+      ┌───────┴───────┐
+      ▼               ▼
+createMetaProvider   createGupshupProvider
+(meta-api.ts,        (gupshup-client.ts,
+ unchanged)           new)
+```
+
+- **`src/lib/whatsapp/providers/types.ts`** — the `WhatsAppProvider`
+  interface every provider implements: `testConnection`, `sendText`,
+  `sendMedia`, `sendTemplate`, `sendInteractive`, `listTemplates`, and
+  the optional Meta-only `register`/`submitTemplate`/`editTemplate`/
+  `deleteTemplate`. `SendResult` keeps the `{ messageId }` shape
+  `meta-api.ts` always used, since that's also the public API's
+  `whatsapp_message_id` field under the hood — no renaming, no broken
+  callers.
+- **`src/lib/whatsapp/providers/resolve.ts`** — `resolveWhatsAppProvider(config)`,
+  the single place that reads `whatsapp_config.provider` and returns a
+  ready-to-use provider. Every call site (send-message.ts,
+  broadcast-core.ts, the automations/flows senders, the broadcast and
+  config/template routes) calls this instead of importing `meta-api.ts`
+  or a Gupshup client directly.
+- **`src/lib/whatsapp/providers/meta-provider.ts`** — thin wrapper over
+  the existing `meta-api.ts`. Zero behavior change; the Meta wire
+  protocol is untouched.
+- **`src/lib/whatsapp/providers/gupshup-client.ts`** /
+  **`gupshup-provider.ts`** — the Gupshup implementation (below).
+- **`src/lib/whatsapp/inbound-pipeline.ts`** — the shared inbound core
+  (contact/conversation resolution, idempotent insert, status ladder,
+  flows/automations/AI dispatch, outbound webhooks) extracted out of
+  the Meta webhook route so a second provider's webhook can drive the
+  exact same CRM pipeline instead of a second copy of it. Meta's route
+  (`src/app/api/whatsapp/webhook/route.ts`) and Gupshup's route
+  (`src/app/api/whatsapp/gupshup/webhook/[token]/route.ts`) each own
+  only their provider-specific "verify + parse" step, then hand a
+  normalized event to this shared module.
+
+## Database
+
+Migration `supabase/migrations/040_gupshup_provider.sql`:
+
+- `whatsapp_config.provider` (`'meta' | 'gupshup'`, default `'meta'` —
+  every existing row keeps working with zero migration effort).
+- Gupshup credential columns on the **same row**:
+  `gupshup_api_key` (encrypted, same AES-256-GCM as `access_token`),
+  `gupshup_app_id`, `gupshup_app_name`, `gupshup_source_phone_number`,
+  `gupshup_connected_at`, `gupshup_webhook_token`.
+- `phone_number_id` / `access_token` are now nullable (a Gupshup-only
+  account has neither) — a `CHECK` constraint enforces that whichever
+  provider is *active* has its own credentials present.
+- **One row per account, either provider** — switching providers
+  flips `whatsapp_config.provider`; both credential sets stay on the
+  row, so switching back to Meta needs no re-entry. This is why
+  Settings shows a confirmation ("future messages will use X") rather
+  than a destructive re-setup flow.
+- `message_templates.gupshup_template_id` — parallel to
+  `meta_template_id`, so template rows can come from either provider.
+- `contacts.wa_marketing_status` / `wa_opt_in_at` / `wa_opt_out_at` /
+  `wa_consent_source` — provider-independent consent state. WACRM had
+  **no** opt-in/out tracking before this migration, for either
+  provider — this is net-new, not a migrated Meta concept.
+
+## Gupshup API endpoints used
+
+All confirmed against Gupshup's official docs (docs.gupshup.io) while
+building this integration:
+
+| Purpose | Endpoint |
+|---|---|
+| Session (free-form) message | `POST https://api.gupshup.io/wa/api/v1/msg` (form-urlencoded, `apikey` header) |
+| Template message | `POST https://api.gupshup.io/wa/api/v1/template/msg` |
+| List templates | `GET https://api.gupshup.io/wa/app/{app_id}/template` |
+| Business details (connection test) | `GET https://api.gupshup.io/wa/app/{app_id}/business` |
+
+Docs pages consulted: `reference/session-text-message`,
+`reference/post_wa-api-v1-msg-{1,3,4,5,6,7,8,9}` (list/image/video/
+document/audio/sticker/reaction/location), `reference/quick-replies`,
+`reference/sending-text-template`, `reference/sending-image-template`,
+`reference/get-all-templates-for-an-app`, `reference/get-business-details`,
+`docs/webhooks-2`, `docs/message-events`, `docs/what-is-an-inbound-message`,
+`docs/user-event`, `docs/set-webhookcallback-url`,
+`docs/message-template-approvals-statuses`.
+
+**Important honest caveat**: Gupshup's docs give a complete, verified
+schema for every *outbound* message type and for the `message-event` /
+`user-event` webhook payloads. They do **not** publish a field-by-field
+breakdown of the inner `payload.payload` object for each *inbound*
+message type (image/video/file/audio/location/button_reply/list_reply)
+the way they do for sends. `src/lib/whatsapp/providers/gupshup-webhook.ts`
+maps these using Gupshup's own field-naming conventions from elsewhere
+in their API (`url`, `caption`, `filename`, `id`/`title` for tapped
+options) — this is the single piece of this integration that is a
+best-effort mapping rather than a docs-confirmed one, and it is called
+out again in the code comments there. **Verifying this against a real
+inbound delivery is the first thing to do in the sandbox E2E pass** —
+see `GUPSHUP_TEST_REPORT.md`.
+
+## Setup
+
+1. **Settings → WhatsApp** → select **Gupshup**.
+2. Fill in:
+   - **Gupshup API Key** — from your Gupshup account.
+   - **Gupshup App ID** — the WhatsApp app's id in your Gupshup
+     dashboard.
+   - **Gupshup App Name** — sent as `src.name` on every send; used by
+     Gupshup for routing/analytics.
+   - **WhatsApp Source Number** — your approved sending number, digits
+     only.
+3. Click **Test connection** — this calls `GET /wa/app/{app_id}/business`
+   server-side with the values currently in the form (never persisted
+   until you click Save). A failure here means the credentials don't
+   work; fix them before saving.
+4. Click **Save Configuration**. WACRM re-verifies, encrypts the API
+   key, and generates a random webhook token if this is the first
+   Gupshup save for this account.
+5. Copy the **Webhook URL** shown (`/api/whatsapp/gupshup/webhook/<token>`)
+   into your Gupshup app's **Dashboard → Webhooks → Callback URL**, and
+   enable **Message events** and **User events** there (Gupshup's own
+   dashboard checkbox — WACRM cannot set this via API; there is no such
+   endpoint in Gupshup's public docs).
+6. Go to **Settings → WhatsApp Templates → Sync from Gupshup** to pull
+   in your approved templates.
+
+## Templates
+
+- **Sync** (`POST /api/whatsapp/templates/sync`) works for both
+  providers — it resolves the account's provider and calls
+  `listTemplates()`, which returns a normalized shape either way.
+  Gupshup's list endpoint is flatter than Meta's: it returns the
+  rendered body (`data`, with `{{n}}` placeholders) but not a
+  structured header/footer/buttons breakdown, so those fields stay
+  empty on Gupshup-synced rows. Category and status are normalized
+  into the same enum Meta rows use (`gupshup-status-map.ts`).
+- **Send** works uniformly through `provider.sendTemplate(...)` —
+  the broadcast wizard, `/api/v1/messages`, `/api/v1/broadcasts`, and
+  automations/flows never need to know which provider a template came
+  from. A media-header template (image/video/document) attaches the
+  media via a separate `message` object on the Gupshup wire call
+  (`gupshup-provider.ts`'s `buildTemplateMediaMessage`), mirroring how
+  Meta requires a header component on every send.
+- **Create / edit / delete via WACRM's UI is not implemented for
+  Gupshup** in this integration (documented limitation — see
+  "Limitations" below). Manage templates in the Gupshup dashboard, then
+  **Sync from Gupshup** to pull the current state in. Meta's full
+  create/edit/delete flow is untouched.
+
+## Broadcasts
+
+Every broadcast send path resolves the provider and calls
+`provider.sendTemplate(...)` — there is one Broadcast Manager, not a
+Gupshup-specific one:
+
+- `src/lib/whatsapp/broadcast-core.ts` (`createBroadcast`/
+  `deliverBroadcast`) — backs `/api/v1/broadcasts` and the resume flow.
+- `src/lib/whatsapp/broadcast-resume.ts` — the "Resume"/"Retry failed"
+  recovery path for an abandoned campaign.
+- `src/app/api/whatsapp/broadcast/route.ts` — the dashboard campaign
+  wizard's own per-batch server-side sender (`src/hooks/use-broadcast-sending.ts`
+  drives the batching from the browser tab, same as before; only the
+  server-side send call changed).
+
+Per-recipient tracking (`pending`/`sent`/`delivered`/`read`/`replied`/
+`failed`, aggregate counts via the existing DB trigger) is unchanged —
+it's driven by `broadcast_recipients.whatsapp_message_id`, which is
+just "the provider's message id" for either provider.
+
+**Hard suppression**: every one of the paths above checks
+`contacts.wa_marketing_status != 'OPTED_OUT'` before a recipient is
+enqueued (`createBroadcast`) or sent (the dashboard route), server-side
+— not a UI filter. A resume pass re-checks it too, since a contact can
+opt out between the original send and a retry. This applies uniformly
+regardless of whether the broadcast was started from the dashboard,
+`/api/v1/broadcasts`, or MCP (which calls the same public endpoint).
+
+## Opt-in / opt-out
+
+Two independent signals feed the same `contacts.wa_marketing_status`
+column:
+
+1. **Gupshup's native `user-event` webhook** (`opted-in`/`opted-out`) —
+   handled in the Gupshup webhook route, matched by the digits-only
+   `phone_normalized` column.
+2. **A user-configured keyword automation** — `update_contact_field`
+   now accepts `wa_marketing_status` as a target field (in addition to
+   `name`/`email`/`company`), so a `keyword_match` trigger (STOP,
+   UNSUBSCRIBE, СТОП, etc. — configure whatever keywords you want,
+   matching the existing automation UI) can set
+   `OPTED_OUT`/`OPTED_IN` the same way the native event does. This is
+   **not** wired up automatically for new installs — set up that
+   automation if you want keyword-based opt-out in addition to (or
+   instead of) Gupshup's native event.
+
+Both signals converge on the same enforcement point (broadcasts,
+above) — there's one suppression mechanism, not two.
+
+Meta has no equivalent native opt-in/out webhook event in this
+integration; the keyword-automation path works identically for Meta
+accounts.
+
+## Webhook security
+
+Gupshup's callback has **no HMAC signature** the way Meta's
+`x-hub-signature-256` does — confirmed against Gupshup's own docs
+(`docs/set-webhookcallback-url`, `docs/webhooks-2`): the webhook URL is
+pasted into their dashboard with no signing mechanism offered at all.
+This is a real, documented limitation, not something this integration
+papers over. The mitigations in place:
+
+1. An unguessable, per-account, random 24-byte token in the URL path
+   itself (`/api/whatsapp/gupshup/webhook/<token>`) — generated once on
+   first save, never re-shown or logged after that.
+2. A rate limit keyed to that token (`RATE_LIMITS.gupshupWebhook`).
+3. Strict envelope validation (`isValidGupshupEnvelope`) before any DB
+   write — malformed payloads are rejected with a 400 before touching
+   the database.
+4. A lookup miss (unknown/wrong token) returns the same 404 as any
+   other not-found path — the endpoint never confirms whether a given
+   token exists.
+
+If an operator suspects their token leaked, disconnect and reconnect
+Gupshup in Settings to generate a new one, then update the callback URL
+in the Gupshup dashboard.
+
+## Testing
+
+- **Unit tests** (mocked HTTP, no network): `gupshup-client.test.ts`
+  (send/template/list/business-details, error-code mapping),
+  `gupshup-provider.test.ts` (message-type building, template-media
+  attachment, missing-`gupshup_template_id` guard), `gupshup-status-map.test.ts`
+  (delivery-status + template-status vocabularies), `gupshup-webhook.test.ts`
+  (envelope validation, inbound message/status/user-event normalization),
+  `resolve.test.ts` (provider selection, backward compatibility,
+  no-cross-provider-leakage), `inbound-pipeline.test.ts`
+  (status-ladder transitions, out-of-order guard).
+- **Regression**: the full existing suite (830+ tests) passes unchanged
+  after every Meta call site was rewired to `resolveWhatsAppProvider` —
+  see `GUPSHUP_TEST_REPORT.md` for the exact run.
+- **Real Gupshup sandbox E2E**: see `GUPSHUP_TEST_REPORT.md` for what
+  was/wasn't run against a live Gupshup app and why.
+
+## Provider switching
+
+Settings → WhatsApp → the provider selector. Switching shows a
+confirmation ("existing history stays, future messages use the new
+provider") and only ever flips the `provider` column — neither
+provider's saved credentials are deleted, so switching back needs no
+re-entry. Nothing about conversations, messages, templates, or
+broadcasts is touched by a switch.
+
+## Rollback
+
+- **Code**: this is a normal feature branch; reverting is a normal git
+  revert. No code path is deleted or altered destructively for Meta.
+- **Migration**: `040_gupshup_provider.sql` only adds nullable columns
+  and relaxes two NOT NULL constraints (both are backward compatible —
+  every existing row already satisfies the new CHECK constraint via
+  `provider` defaulting to `'meta'` with its existing Meta columns
+  populated). No down-migration is needed to restore Meta-only
+  behavior; simply never set `provider = 'gupshup'` on a row.
+- **Provider setting**: switch any account back to `provider = 'meta'`
+  in Settings at any time — no data loss, per "Provider switching"
+  above.
+- **Before a production migration**: take a database backup regardless
+  (standard practice for any migration, not specific to this one).
+
+## Limitations / follow-ups before a production Gupshup WABA
+
+1. **Template create/edit/delete via WACRM UI is Meta-only.** Manage
+   Gupshup templates in Gupshup's own dashboard; sync pulls them in.
+2. **Gupshup template sync doesn't recover header/footer/button
+   structure** (Gupshup's list endpoint doesn't return it) — a synced
+   Gupshup template's header/footer/buttons stay empty locally even if
+   the template has them on Gupshup's side. Body text and variables
+   sync correctly.
+3. **Inbound media-type field mapping is best-effort**, not
+   docs-confirmed (see the caveat above) — verify against a real
+   sandbox delivery before relying on it in production.
+4. **Interactive list-message mapping (`type: "list"`)** for Gupshup is
+   built from a compressed doc summary, not a fully worked example —
+   verify against a live send/tap round-trip before depending on it.
+5. **No per-provider rate-limit tuning** — Gupshup's own send-rate
+   limits weren't independently documented in the pages consulted;
+   broadcast concurrency uses the same pacing as Meta. Watch for 429s
+   in production and tune `RATE_LIMITS`/broadcast batch pacing if
+   needed.
+6. **Template webhook events** (Gupshup template-status-changed
+   notifications, if Gupshup sends them) are not specifically handled —
+   only `message`, `message-event`, and `user-event` are. An
+   unrecognized event type is logged (`unsupported_provider_event`),
+   never silently dropped, so this is safe but incomplete; re-sync
+   manually to see status changes until this is added.
+7. **Reactions are not normalized for Gupshup inbound** — no inbound
+   reaction event type is documented for Gupshup in the pages
+   consulted; this is a no-op today rather than a guess.

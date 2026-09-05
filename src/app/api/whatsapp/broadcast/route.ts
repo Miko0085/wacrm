@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
-import { decrypt } from '@/lib/whatsapp/encryption'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
 import {
@@ -15,6 +13,7 @@ import {
   rateLimitResponse,
   RATE_LIMITS,
 } from '@/lib/rate-limit'
+import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve'
 
 interface BroadcastResult {
   phone: string
@@ -136,7 +135,7 @@ export async function POST(request: Request) {
       )
     }
 
-    const accessToken = decrypt(config.access_token)
+    const provider = resolveWhatsAppProvider(config)
 
     // Load the template row once so sendTemplateMessage can build
     // header + button components on each iteration. Loading inside
@@ -160,6 +159,25 @@ export async function POST(request: Request) {
     }
     const templateRow = resolvedTemplate.row
 
+    // Hard suppression: never send a broadcast/template message to a
+    // contact who has opted out of WhatsApp marketing, regardless of
+    // who's driving this request (dashboard wizard, or a direct caller
+    // of this route). Matched on the same digits-only phone_normalized
+    // key contacts dedup on (migration 022), so formatting differences
+    // ("+1 555…" vs "1555…") don't let a suppressed contact slip through.
+    const sanitizedPhones = recipients
+      .map((r) => sanitizePhoneForMeta(r.phone))
+      .filter(Boolean)
+    const { data: suppressedContacts } = await supabase
+      .from('contacts')
+      .select('phone_normalized')
+      .eq('account_id', accountId)
+      .eq('wa_marketing_status', 'OPTED_OUT')
+      .in('phone_normalized', sanitizedPhones)
+    const suppressedPhones = new Set(
+      (suppressedContacts ?? []).map((c: { phone_normalized: string }) => c.phone_normalized),
+    )
+
     const results: BroadcastResult[] = []
     let sentCount = 0
     let failedCount = 0
@@ -177,6 +195,16 @@ export async function POST(request: Request) {
         continue
       }
 
+      if (suppressedPhones.has(sanitized)) {
+        results.push({
+          phone: recipient.phone,
+          status: 'failed',
+          error: 'Contact has opted out of WhatsApp marketing messages',
+        })
+        failedCount++
+        continue
+      }
+
       // Retry with phone variants on "not in allowed list" so numbers
       // that differ only in a trunk-prefix 0 still reach recipients.
       const variants = phoneVariants(sanitized)
@@ -185,9 +213,7 @@ export async function POST(request: Request) {
 
       for (const variant of variants) {
         try {
-          const result = await sendTemplateMessage({
-            phoneNumberId: config.phone_number_id,
-            accessToken,
+          const result = await provider.sendTemplate({
             to: variant,
             templateName: template_name,
             language: resolvedTemplate.language,
