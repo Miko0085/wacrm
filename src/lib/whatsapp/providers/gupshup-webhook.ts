@@ -128,10 +128,18 @@ export function normalizeGupshupInboundMessage(
     }
     case 'button_reply':
     case 'list_reply': {
-      const id = typeof inner.id === 'string' ? inner.id : null
+      // Live-confirmed against a real Gupshup sandbox tap (see
+      // docs/GUPSHUP_TEST_REPORT.md): the tapped option's stable id
+      // comes back in `postbackText` — the same field name
+      // sendInteractive() writes on the way out (`options[].postbackText`
+      // for quick_reply, `items[].options[].postbackText` for list).
+      // `id` is present in the payload but always empty; `title` is
+      // the human-readable label.
+      const postbackText = typeof inner.postbackText === 'string' ? inner.postbackText : null
+      const id = typeof inner.id === 'string' && inner.id ? inner.id : null
       const title = typeof inner.title === 'string' ? inner.title : null
-      interactiveReplyId = id
-      contentText = title || id
+      interactiveReplyId = postbackText || id
+      contentText = title || postbackText || id
       break
     }
   }

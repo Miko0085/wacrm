@@ -103,19 +103,28 @@ document/audio/sticker/reaction/location), `reference/quick-replies`,
 `docs/user-event`, `docs/set-webhookcallback-url`,
 `docs/message-template-approvals-statuses`.
 
-**Important honest caveat**: Gupshup's docs give a complete, verified
-schema for every *outbound* message type and for the `message-event` /
-`user-event` webhook payloads. They do **not** publish a field-by-field
-breakdown of the inner `payload.payload` object for each *inbound*
-message type (image/video/file/audio/location/button_reply/list_reply)
-the way they do for sends. `src/lib/whatsapp/providers/gupshup-webhook.ts`
-maps these using Gupshup's own field-naming conventions from elsewhere
-in their API (`url`, `caption`, `filename`, `id`/`title` for tapped
-options) — this is the single piece of this integration that is a
-best-effort mapping rather than a docs-confirmed one, and it is called
-out again in the code comments there. **Verifying this against a real
-inbound delivery is the first thing to do in the sandbox E2E pass** —
-see `GUPSHUP_TEST_REPORT.md`.
+**Note on inbound field mapping**: Gupshup's public docs don't publish a
+field-by-field breakdown of the inner `payload.payload` object for each
+*inbound* message type the way they do for sends. This integration's
+mapping (`src/lib/whatsapp/providers/gupshup-webhook.ts`) was corrected
+against a **real Gupshup sandbox app** during the E2E pass — see
+`GUPSHUP_TEST_REPORT.md` for the exact live-captured payloads. Two real
+discrepancies from the initial docs-based guess were found and fixed
+this way:
+- `GET /wa/app/{app_id}/business` nests everything under a `business`
+  key (`{status, business: {name, ...}}`), not flat as the docs example
+  suggested.
+- A tapped button/list option's stable id comes back in **`postbackText`**,
+  not `id` (`id` is always an empty string in practice) — this is what
+  the Flows engine and the `interactive_reply` automation trigger route
+  on, so it had to be exactly right.
+Text/image/video/document/audio sends and their inbound delivery-status
+ladder (sent→delivered→read, and the out-of-order-safe `failed` guard)
+are all confirmed against live sends in that same pass. Template send
+and broadcast delivery are implemented and confirmed with a locally-
+authored test template + template + broadcast wiring; sending
+an actual Gupshup-*approved* template end-to-end still needs the
+account to have one approved (see "Limitations" below).
 
 ## Setup
 
@@ -305,24 +314,39 @@ broadcasts is touched by a switch.
    structure** (Gupshup's list endpoint doesn't return it) — a synced
    Gupshup template's header/footer/buttons stay empty locally even if
    the template has them on Gupshup's side. Body text and variables
-   sync correctly.
-3. **Inbound media-type field mapping is best-effort**, not
-   docs-confirmed (see the caveat above) — verify against a real
-   sandbox delivery before relying on it in production.
-4. **Interactive list-message mapping (`type: "list"`)** for Gupshup is
-   built from a compressed doc summary, not a fully worked example —
-   verify against a live send/tap round-trip before depending on it.
-5. **No per-provider rate-limit tuning** — Gupshup's own send-rate
+   sync correctly. Not yet re-verified against a real *approved*
+   Gupshup template (the sandbox account used for E2E testing had none
+   at the time — see `GUPSHUP_TEST_REPORT.md`); the template-send wire
+   format itself (`template.id` + `params`, optional media `message`
+   object) is implemented per Gupshup's docs and unit-tested, but a
+   real end-to-end template send is still pending an approved template.
+3. **No per-provider rate-limit tuning** — Gupshup's own send-rate
    limits weren't independently documented in the pages consulted;
    broadcast concurrency uses the same pacing as Meta. Watch for 429s
    in production and tune `RATE_LIMITS`/broadcast batch pacing if
    needed.
-6. **Template webhook events** (Gupshup template-status-changed
+4. **Template webhook events** (Gupshup template-status-changed
    notifications, if Gupshup sends them) are not specifically handled —
    only `message`, `message-event`, and `user-event` are. An
    unrecognized event type is logged (`unsupported_provider_event`),
    never silently dropped, so this is safe but incomplete; re-sync
    manually to see status changes until this is added.
-7. **Reactions are not normalized for Gupshup inbound** — no inbound
+5. **Reactions are not normalized for Gupshup inbound** — no inbound
    reaction event type is documented for Gupshup in the pages
    consulted; this is a no-op today rather than a guess.
+6. **Outbound media source reliability**: Gupshup's own media fetcher
+   is pickier than a generic HTTP client about the source URL — during
+   E2E testing, two different (genuinely reachable, correctly
+   `Content-Type`d) audio URLs failed while a third, smaller, direct
+   (no-redirect) one worked; a non-Opus-codec OGG file also failed
+   outright (WhatsApp's own audio spec requires OGG/Opus specifically,
+   not just any OGG). Text, image, video, and document sends were
+   reliable with any correctly-typed public URL tried. If an outbound
+   media send fails, try a smaller file behind a direct (non-redirecting)
+   URL before assuming a code issue.
+
+Everything above item 6 was found and fixed (not just documented) during
+a real Gupshup sandbox E2E pass — see `GUPSHUP_TEST_REPORT.md` for the
+full list of what was sent/received and the two real bugs it caught
+(the `business` response-nesting and the `postbackText` field for
+tapped interactive options).

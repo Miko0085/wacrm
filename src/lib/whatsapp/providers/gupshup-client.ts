@@ -167,6 +167,15 @@ export interface GupshupBusinessDetails {
   country?: string
 }
 
+interface GupshupBusinessDetailsResponse {
+  status?: string
+  // The real response nests everything under `business` — confirmed
+  // against a live app during the Gupshup sandbox E2E pass (the docs
+  // page consulted showed the fields flat; live behavior differs).
+  // See docs/GUPSHUP_TEST_REPORT.md.
+  business?: GupshupBusinessDetails
+}
+
 /**
  * GET /wa/app/{app_id}/business — used purely as a real server-side
  * connection test (Gupshup has no dedicated health-check endpoint):
@@ -181,5 +190,6 @@ export async function getBusinessDetails(
     headers: { apikey: creds.apiKey },
   })
   if (!res.ok) await throwGupshupError(res)
-  return (await res.json()) as GupshupBusinessDetails
+  const data = (await res.json()) as GupshupBusinessDetailsResponse
+  return data.business ?? (data as GupshupBusinessDetails)
 }

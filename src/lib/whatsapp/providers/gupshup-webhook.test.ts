@@ -80,11 +80,31 @@ describe('normalizeGupshupInboundMessage', () => {
     expect(result?.contentText).toBe('invoice.pdf')
   })
 
-  it('normalizes a button_reply tap into an interactive reply', () => {
+  it('normalizes a button_reply tap into an interactive reply, reading postbackText (live-confirmed — id is always empty)', () => {
+    // Real payload observed from a live Gupshup sandbox tap:
+    // { "title": "Yes", "id": "", "reply": "Yes 1", "postbackText": "yes" }
     const result = normalizeGupshupInboundMessage({
       ...base,
       payload: {
         id: 'wamid.btn',
+        source: '1555',
+        type: 'button_reply',
+        payload: { title: 'Yes', id: '', reply: 'Yes 1', postbackText: 'yes' },
+        sender: { phone: '1555' },
+      },
+    })
+    expect(result).toMatchObject({
+      contentType: 'interactive',
+      interactiveReplyId: 'yes',
+      contentText: 'Yes',
+    })
+  })
+
+  it('falls back to id when postbackText is absent (forward-compat)', () => {
+    const result = normalizeGupshupInboundMessage({
+      ...base,
+      payload: {
+        id: 'wamid.btn2',
         source: '1555',
         type: 'button_reply',
         payload: { id: 'opt-1', title: 'Yes please' },

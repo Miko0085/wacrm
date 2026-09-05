@@ -122,50 +122,82 @@ review:
 - Full suite after this round: **910 passed / 3 failed / 913 total**
   (same pre-existing `currency.test.ts` failures) — 0 regressions.
   `npm run typecheck` clean.
+- After the live E2E pass and its fixes (below): **912 passed / 3 failed
+  / 915 total** — 2 new test cases for the real `postbackText`/`business`-nesting
+  findings, 0 regressions. `npm run typecheck` clean.
 
 ## Real Gupshup sandbox E2E
 
-**Status: not yet run.** This requires real Gupshup sandbox
-credentials (API key, App ID, App Name, source WhatsApp number) and at
-least one test recipient WhatsApp number, which is external state this
-report can't fabricate. The task's own acceptance policy requires this
-report to say so plainly rather than claim a result that didn't happen.
+**Status: run, against a real Gupshup app and a real WhatsApp test
+phone**, tunneled to the local dev server via a Cloudflare quick tunnel
+(`cloudflared tunnel --url http://localhost:3001`) so Gupshup's real
+servers could deliver webhooks to the actual code running locally.
 
-When credentials are available, the procedure is:
+| Step | Result |
+|---|---|
+| Settings → WhatsApp → Gupshup: enter credentials, Test connection, Save | **PASS** — `testConnection()` returned real business details (`GET /wa/app/{app_id}/business`), config saved with `provider='gupshup'`, encrypted key, generated webhook token |
+| Webhook URL registered in Gupshup dashboard (format v2, Message + User events) | **PASS** |
+| Inbound text message | **PASS** — landed in the Inbox with correct contact/conversation/phone/text |
+| Outbound text | **PASS** (after an account-side fix, see "Real issues found" below) — confirmed full `sent → delivered → read` status-ladder progression via real webhook events |
+| Outbound image | **PASS** |
+| Outbound document (PDF) | **PASS** |
+| Outbound audio | **PASS** (after switching to a small, direct, correctly-codec'd MP3 — see limitation #6 in `GUPSHUP_INTEGRATION.md`) |
+| Outbound video | **PASS** |
+| Interactive quick-reply buttons — send + tap → inbound reply | **PASS** (after a real code fix — see "Real issues found") |
+| Interactive list — send + tap → inbound reply | **PASS** (same fix) |
+| STOP keyword → `wa_marketing_status = OPTED_OUT` | **PASS** — system-default STOP fired on a real inbound "стоп" message, no automation configured |
+| Conversational reply still reaches an opted-out contact | **PASS** — confirms suppression is Marketing-only, not a hard block |
+| Broadcast creation with a mixed opted-out/eligible recipient list | **PASS** (after a real, pre-existing, unrelated DB fix — see below) — the opted-out recipient was excluded (`rejected: 1`), the eligible one planned (`planned.length: 1`) |
+| Outbound **template** send / broadcast delivery to a real recipient | **NOT RUN** — the test Gupshup app had zero approved templates at test time (confirmed via a real `listTemplates()` call). The template wire format itself is implemented per Gupshup's docs and unit-tested; only the live send is pending an approved template. |
+| Automations/Flows/AI live-fire against the Gupshup number | **NOT RUN** — no automation/flow/AI config existed on this fresh test account; the code path is identical to Meta's (same `resolveWhatsAppProvider` call sites) and already covered by the unit suite |
 
-1. **Settings → WhatsApp → Gupshup** — enter credentials, **Test
-   connection** (expect `connected: true` against `GET /wa/app/{app_id}/business`),
-   **Save**, copy the webhook URL into the Gupshup dashboard, enable
-   Message + User events.
-2. **Sync from Gupshup** — confirm approved templates appear with
-   correct name/language/category/status.
-3. **Inbound**: message the connected number from a real WhatsApp
-   account → confirm it lands in the Shared Inbox, with correct
-   sender name/phone, text, and (for a media message) that the
-   attachment renders. **This is the step that validates or corrects
-   the best-effort inbound-media-field mapping documented as a
-   limitation in `GUPSHUP_INTEGRATION.md`** — check the actual Gupshup
-   payload against what `gupshup-webhook.ts` expects and adjust field
-   names if they differ.
-4. **Outbound text**: reply from the Inbox → confirm delivery on the
-   test phone.
-5. **Outbound template**: send an approved template with variables from
-   the composer/broadcast wizard → confirm it renders correctly on the
-   test phone, and that `delivered`/`read` status updates land within
-   a few seconds of the recipient's phone confirming them (validates
-   the `message-event` webhook + status-ladder mapping end to end).
-6. **Broadcast**: a 2–5 recipient test broadcast → confirm per-recipient
-   `sent → delivered → read` progression in the dashboard, and that a
-   reply from one recipient flips `replied_count`.
-7. **Opt-out**: send `STOP` (or trigger a native Gupshup opt-out, if
-   the sandbox supports simulating one) from a test number → confirm
-   `contacts.wa_marketing_status` flips to `OPTED_OUT` and that number
-   is excluded from a subsequent test broadcast (both the create-time
-   filter and, if timed right, the resume-time re-check).
-8. **Automations/Flows/AI**: confirm an existing keyword automation,
-   flow, and (if configured) the AI reply assistant / auto-reply all
-   fire correctly against the Gupshup-connected number, exactly as
-   they do for Meta.
+### Real issues found and fixed during this pass
+
+1. **`message_templates.provider` column was missing.** `templates/sync/route.ts`
+   referenced it but migration 040 never added it — every Gupshup
+   template sync would have failed with a Postgres error. Fixed in
+   `supabase/migrations/041_message_templates_provider.sql`.
+2. **`GET /wa/app/{app_id}/business` response shape.** Real response
+   nests fields under `business` (`{status, business: {name, ...}}`),
+   not flat as the docs example suggested. Fixed in `gupshup-client.ts`'s
+   `getBusinessDetails` (prefers the nested shape, falls back to flat
+   for safety) — see `docs/GUPSHUP_INTEGRATION.md`.
+3. **Tapped button/list reply id.** The real inbound `button_reply`/
+   `list_reply` payload is `{title, id: "", reply, postbackText}` —
+   the stable id is in `postbackText`, not `id` (`id` is always empty
+   in practice). This is exactly the field `sendInteractive()` writes
+   on the way out, so it round-trips correctly once read from the
+   right place. Fixed in `gupshup-webhook.ts`'s `normalizeGupshupInboundMessage`
+   (prefers `postbackText`, falls back to `id` for forward-compat).
+   Without this fix, the Flows engine and the `interactive_reply`
+   automation trigger could never route on a Gupshup button/list tap.
+4. **`create_broadcast_with_recipients` (migration 037) — pre-existing,
+   NOT Gupshup-specific.** Raises "column reference contact_id is
+   ambiguous" against a real Postgres engine: the function's
+   `RETURNS TABLE(..., contact_id uuid)` implicitly declares `contact_id`
+   as a PL/pgSQL variable in scope for the whole function body, which
+   collides with the bare `contact_id` in a nested `INSERT ... RETURNING`.
+   This was never caught because `broadcast-core.test.ts` mocks the
+   `.rpc()` boundary and never executes the real SQL — meaning **every
+   broadcast created through `POST /api/v1/broadcasts` (or the resume
+   path) for ANY account, Meta or Gupshup, would have failed against a
+   real database.** Fixed in
+   `supabase/migrations/042_fix_create_broadcast_ambiguous_column.sql`
+   (table-qualifies + aliases the `RETURNING` column; no signature or
+   caller change). Confirmed fixed via both a direct SQL call and the
+   real `createBroadcast()` code path.
+5. **Two intermittent outbound-media test-fixture failures** (a
+   Vorbis-codec OGG, and an 8 MB MP3 from a slower host) — resolved by
+   using a smaller, directly-hosted, correctly-codec'd file; documented
+   as limitation #6 in `GUPSHUP_INTEGRATION.md` rather than treated as
+   a code bug, since the same code succeeded with an equivalent file
+   moments later.
+
+All fixes are covered by updated/new unit tests
+(`gupshup-client.test.ts`, `gupshup-webhook.test.ts`) except the two DB
+migrations (041, 042), which are schema/SQL fixes validated by direct
+`psql` execution against the real local database, not by the vitest
+suite (which mocks the DB boundary by design).
 
 ## Meta regression checklist
 

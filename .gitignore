@@ -43,6 +43,10 @@ yarn-error.log*
 /supabase/.branches
 /supabase/.temp
 
+# Scratch scripts used for the real Gupshup sandbox E2E pass — throwaway,
+# not part of the shipped codebase.
+/e2e-scratch
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

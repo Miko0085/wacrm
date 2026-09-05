@@ -146,12 +146,20 @@ describe('gupshup-client', () => {
   })
 
   describe('getBusinessDetails', () => {
-    it('GETs business details for the connection test', async () => {
-      fetchMock.mockResolvedValueOnce(jsonResponse(200, { name: 'Acme Inc', contactNumber: '15550001234' }))
+    it('unwraps the real, live-confirmed {status, business:{...}} response shape', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(200, { status: 'success', business: { name: 'Acme Inc', contactNumber: '15550001234' } }),
+      )
       const details = await getBusinessDetails(CREDS)
       expect(details.name).toBe('Acme Inc')
       const [url] = fetchMock.mock.calls[0]
       expect(url).toBe('https://api.gupshup.io/wa/app/app-1/business')
+    })
+
+    it('falls back to a flat response shape if Gupshup ever changes back', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(200, { name: 'Acme Inc', contactNumber: '15550001234' }))
+      const details = await getBusinessDetails(CREDS)
+      expect(details.name).toBe('Acme Inc')
     })
 
     it('surfaces a 401 as auth_error — this is what powers "Test connection"', async () => {
