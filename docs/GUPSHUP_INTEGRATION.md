@@ -314,12 +314,11 @@ broadcasts is touched by a switch.
    structure** (Gupshup's list endpoint doesn't return it) — a synced
    Gupshup template's header/footer/buttons stay empty locally even if
    the template has them on Gupshup's side. Body text and variables
-   sync correctly. Not yet re-verified against a real *approved*
-   Gupshup template (the sandbox account used for E2E testing had none
-   at the time — see `GUPSHUP_TEST_REPORT.md`); the template-send wire
-   format itself (`template.id` + `params`, optional media `message`
-   object) is implemented per Gupshup's docs and unit-tested, but a
-   real end-to-end template send is still pending an approved template.
+   sync correctly — confirmed against a real approved template, both
+   the direct send and a full broadcast (sent→delivered→read→replied)
+   — see `GUPSHUP_TEST_REPORT.md`. A media-header template's wire
+   format is implemented per Gupshup's docs and unit-tested but wasn't
+   independently live-tested (the approved test template was text-only).
 3. **No per-provider rate-limit tuning** — Gupshup's own send-rate
    limits weren't independently documented in the pages consulted;
    broadcast concurrency uses the same pacing as Meta. Watch for 429s

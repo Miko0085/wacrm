@@ -468,6 +468,19 @@ matched by the digits-only `phone_normalized` column. See §9.
   missing — i.e. the template was never synced). Positional `params`
   map to the template's `{{n}}` slots. A media-header template attaches
   its media via the separate `message` object described in §5.2.
+- **Confirmed live, end to end**: submitted a real text template on a
+  live Gupshup app, waited for Meta's review (took a few hours, not
+  instant), synced it, then sent it two ways — a direct
+  `sendMessageToConversation()` call and a full
+  `createBroadcast()` + `deliverBroadcast()` broadcast — both reached
+  a real WhatsApp phone. The broadcast's aggregate counters
+  (`sent_count`/`delivered_count`/`read_count`) and per-recipient
+  `broadcast_recipients.status` advanced correctly through the real
+  status webhooks, and a real reply from the recipient flipped
+  `replied_count` to 1. A media-header template's wire format is
+  implemented and unit-tested but wasn't independently live-tested
+  (the approved test template was text-only) — see
+  `GUPSHUP_TEST_REPORT.md` for the full run.
 
 ---
 
@@ -572,9 +585,47 @@ clause); no signature or caller change. If you're running an older
 snapshot of this codebase, make sure migration 042 is applied before
 relying on `POST /api/v1/broadcasts`.
 
+**Confirmed live**: a real `createBroadcast()` + `deliverBroadcast()`
+run against a live Gupshup app and a real WhatsApp phone, with a
+two-recipient list where one was `OPTED_OUT` — the opted-out recipient
+was excluded (`rejected: 1`), the eligible one was planned and
+delivered. A second real broadcast with an approved template reached
+`sent_count/delivered_count/read_count = 1/1/1` and `replied_count = 1`
+after a genuine reply, all driven by real Gupshup webhooks landing on
+the shared status-ladder code.
+
 ---
 
-## 11. Known limitations
+## 11. Live E2E verification checklist
+
+Everything below was run against a real Gupshup app and a real
+WhatsApp phone (tunneled to a local dev server via `cloudflared`), not
+just unit-mocked. Use this checklist to re-verify after any change that
+touches the provider layer, the inbound pipeline, or the broadcast
+path — see `GUPSHUP_TEST_REPORT.md` for the full run log.
+
+- [x] Settings → Gupshup: Test connection, Save, webhook URL generated
+- [x] Webhook delivery reaches the app (format v2, Message + User events)
+- [x] Inbound text message → lands in Shared Inbox with correct contact/conversation
+- [x] Outbound text — full `sent → delivered → read` status ladder
+- [x] Outbound image
+- [x] Outbound document (PDF)
+- [x] Outbound audio (small, direct, correctly-codec'd file)
+- [x] Outbound video
+- [x] Interactive quick-reply buttons — send + real tap → inbound reply with correct id
+- [x] Interactive list — send + real tap → inbound reply with correct id
+- [x] STOP keyword (system default, no automation configured) → `OPTED_OUT`
+- [x] Conversational reply still reaches an opted-out contact (suppression is Marketing-only)
+- [x] Broadcast creation with a mixed opted-out/eligible recipient list → correct exclusion
+- [x] Template sync (real, Meta-approved template)
+- [x] Template send (direct, `sendMessageToConversation`)
+- [x] Broadcast with a real approved template → `sent/delivered/read` aggregate counts correct
+- [x] Broadcast reply tracking → `replied_count` advances on a real reply
+- [ ] Automations/Flows/AI live-fire against the Gupshup number — code path shared with Meta, not independently live-fired (no automation/flow/AI configured on the test account)
+- [ ] Media-header template send — wire format implemented + unit-tested, not live-tested (test template was text-only)
+- [ ] Meta-side regression walkthrough (same checklist, Meta-connected account) — needs separate Meta test credentials
+
+## 12. Known limitations
 
 1. Template create/edit/delete via WACRM's UI is Meta-only (§7).
 2. Gupshup template sync doesn't recover header/footer/button structure
@@ -599,7 +650,7 @@ relying on `POST /api/v1/broadcasts`.
 
 ---
 
-## 12. Provider switching & rollback
+## 13. Provider switching & rollback
 
 Settings → WhatsApp → the provider selector, with a confirmation
 ("existing history stays, future messages use the new provider"). A
@@ -616,7 +667,7 @@ restore Meta-only behavior.
 
 ---
 
-## 13. Quick troubleshooting index
+## 14. Quick troubleshooting index
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|

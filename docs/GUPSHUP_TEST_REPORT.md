@@ -148,7 +148,10 @@ servers could deliver webhooks to the actual code running locally.
 | STOP keyword → `wa_marketing_status = OPTED_OUT` | **PASS** — system-default STOP fired on a real inbound "стоп" message, no automation configured |
 | Conversational reply still reaches an opted-out contact | **PASS** — confirms suppression is Marketing-only, not a hard block |
 | Broadcast creation with a mixed opted-out/eligible recipient list | **PASS** (after a real, pre-existing, unrelated DB fix — see below) — the opted-out recipient was excluded (`rejected: 1`), the eligible one planned (`planned.length: 1`) |
-| Outbound **template** send / broadcast delivery to a real recipient | **NOT RUN** — the test Gupshup app had zero approved templates at test time (confirmed via a real `listTemplates()` call). The template wire format itself is implemented per Gupshup's docs and unit-tested; only the live send is pending an approved template. |
+| Template sync (real, once Meta approved it) | **PASS** — `listTemplates()` returned the real approved template (`status: APPROVED`, real `gupshup_template_id`) once Meta finished review (took a few hours from submission) |
+| Outbound **template** send (direct, `sendMessageToConversation`) | **PASS** — real send to the test phone, full `sent → delivered → read` ladder confirmed via real webhooks |
+| **Broadcast** with a real approved template (`createBroadcast` + `deliverBroadcast`) | **PASS** — delivered to the real test phone; `broadcasts` aggregate counts (`sent_count`, `delivered_count`, `read_count`) updated correctly via the real status webhooks |
+| Broadcast **reply tracking** (`flagBroadcastReplyIfAny`) | **PASS** — a real reply from the test phone flipped the recipient to `status: 'replied'` and `broadcasts.replied_count` to 1 |
 | Automations/Flows/AI live-fire against the Gupshup number | **NOT RUN** — no automation/flow/AI config existed on this fresh test account; the code path is identical to Meta's (same `resolveWhatsAppProvider` call sites) and already covered by the unit suite |
 
 ### Real issues found and fixed during this pass
