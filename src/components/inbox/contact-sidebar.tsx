@@ -48,11 +48,13 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         .from("deals")
         .select("*, stage:pipeline_stages(*)")
         .eq("contact_id", contact.id)
+        .eq("account_id", accountId!)
         .order("created_at", { ascending: false }),
       supabase
         .from("contact_notes")
         .select("*")
         .eq("contact_id", contact.id)
+        .eq("account_id", accountId!)
         .order("created_at", { ascending: false }),
       supabase
         .from("contact_tags")
@@ -71,7 +73,7 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         }));
       setTags(mapped);
     }
-  }, [contact]);
+  }, [contact, accountId]);
 
   // Load on contact change. setContactData/setTags run inside async
   // Supabase callbacks, not synchronously in the effect body.

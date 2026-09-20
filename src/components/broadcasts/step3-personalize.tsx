@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/select';
 import { ArrowLeft, ArrowRight, Eye, ImageIcon, Loader2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
 
 type VariableType = 'static' | 'field' | 'custom_field';
 
@@ -77,6 +78,7 @@ export function Step3Personalize({
   onBack,
 }: Step3Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [loadingFields, setLoadingFields] = useState(true);
   const [firstContact, setFirstContact] = useState<Contact | null>(null);
@@ -92,10 +94,11 @@ export function Step3Personalize({
     (async () => {
       const supabase = createClient();
       const [fieldsRes, contactRes] = await Promise.all([
-        supabase.from('custom_fields').select('*').order('field_name'),
+        supabase.from('custom_fields').select('*').eq('account_id', accountId!).order('field_name'),
         supabase
           .from('contacts')
           .select('*')
+          .eq('account_id', accountId!)
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle(),

@@ -56,7 +56,6 @@ export function SettingsOverview({
     if (!user || !accountId) return;
     let cancelled = false;
     const supabase = createClient();
-    const userId = user.id;
     const acctId = accountId;
 
     // Cheap counts — resolve fast, render immediately.
@@ -73,17 +72,20 @@ export function SettingsOverview({
           supabase
             .from('message_templates')
             .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId),
+            .eq('account_id', acctId),
           supabase
             .from('message_templates')
             .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId)
+            .eq('account_id', acctId)
             .eq('status', 'PENDING'),
           supabase
             .from('tags')
             .select('id', { count: 'exact', head: true })
-            .eq('user_id', userId),
-          supabase.from('custom_fields').select('id', { count: 'exact', head: true }),
+            .eq('account_id', acctId),
+          supabase
+            .from('custom_fields')
+            .select('id', { count: 'exact', head: true })
+            .eq('account_id', acctId),
         ]);
 
       if (cancelled) return;

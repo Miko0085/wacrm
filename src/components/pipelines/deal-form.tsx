@@ -112,10 +112,14 @@ export function DealForm({
     if (!open) return;
     let cancelled = false;
     (async () => {
-      const [c, p] = await Promise.all([
-        supabase.from("contacts").select("*").order("name"),
-        supabase.from("profiles").select("*").order("full_name"),
+      const [c, memberships] = await Promise.all([
+        supabase.from("contacts").select("*").eq("account_id", accountId!).order("name"),
+        supabase.from("account_memberships").select("user_id").eq("account_id", accountId!),
       ]);
+      const memberIds = (memberships.data ?? []).map((row) => row.user_id);
+      const p = memberIds.length
+        ? await supabase.from("profiles").select("*").in("user_id", memberIds).order("full_name")
+        : { data: [] };
       if (cancelled) return;
       setContacts((c.data ?? []) as Contact[]);
       setProfiles((p.data ?? []) as Profile[]);
@@ -140,6 +144,7 @@ export function DealForm({
         .from("conversations")
         .select("*")
         .eq("contact_id", contactId)
+        .eq("account_id", accountId!)
         .order("last_message_at", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -174,7 +179,8 @@ export function DealForm({
       const { error } = await supabase
         .from("deals")
         .update(payload)
-        .eq("id", deal.id);
+        .eq("id", deal.id)
+        .eq("account_id", accountId!);
       if (error) {
         toast.error(t("toastFailedSave"));
         setSaving(false);
@@ -217,7 +223,8 @@ export function DealForm({
     const { error } = await supabase
       .from("deals")
       .update({ status })
-      .eq("id", deal.id);
+      .eq("id", deal.id)
+      .eq("account_id", accountId!);
     setStatusAction(null);
     if (error) {
       toast.error(t("toastFailedStatus"));
@@ -233,7 +240,11 @@ export function DealForm({
   async function handleDelete() {
     if (!deal) return;
     setDeleting(true);
-    const { error } = await supabase.from("deals").delete().eq("id", deal.id);
+    const { error } = await supabase
+      .from("deals")
+      .delete()
+      .eq("id", deal.id)
+      .eq("account_id", accountId!);
     setDeleting(false);
     if (error) {
       toast.error(t("toastFailedDelete"));

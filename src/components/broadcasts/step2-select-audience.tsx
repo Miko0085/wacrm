@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
 
 type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -50,6 +51,7 @@ export function Step2SelectAudience({
   onBack,
 }: Step2Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
 
   const OPERATOR_OPTIONS = useMemo<{ value: CustomFieldOperator; label: string }[]>(() => [
     { value: 'is', label: t('selectAudience.operatorIs') },
@@ -112,7 +114,7 @@ export function Step2SelectAudience({
       setLoadingTags(true);
       try {
         const supabase = createClient();
-        const { data } = await supabase.from('tags').select('*').order('name');
+        const { data } = await supabase.from('tags').select('*').eq('account_id', accountId!).order('name');
         setTags(data ?? []);
       } finally {
         setLoadingTags(false);
@@ -131,6 +133,7 @@ export function Step2SelectAudience({
         const { data } = await supabase
           .from('custom_fields')
           .select('*')
+          .eq('account_id', accountId!)
           .order('field_name');
         setCustomFields(data ?? []);
       } finally {
@@ -207,7 +210,8 @@ export function Step2SelectAudience({
         // "All" — fetch the total, then subtract exclude set if any.
         const { count } = await supabase
           .from('contacts')
-          .select('*', { count: 'exact', head: true });
+          .select('*', { count: 'exact', head: true })
+          .eq('account_id', accountId!);
         const total = count ?? 0;
         setEstimatedCount(excludeSet ? Math.max(0, total - excludeSet.size) : total);
       }

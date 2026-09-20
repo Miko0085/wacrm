@@ -56,7 +56,8 @@ export function PresenceHeartbeat() {
       const t = Date.now();
       if (t - lastBeatAt < 1_000) return;
       lastBeatAt = t;
-      const { error } = await supabase.rpc("touch_presence", {
+      const { error } = await supabase.rpc("touch_account_presence", {
+        p_account_id: accountId,
         p_status: currentStatus(),
       });
       if (error && !cancelled) {

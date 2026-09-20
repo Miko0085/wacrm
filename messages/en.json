@@ -38,7 +38,9 @@
     "defaultAvatar": "Avatar",
     "menuProfile": "Profile",
     "menuSettings": "Settings",
-    "menuSignOut": "Sign out"
+    "menuSignOut": "Sign out",
+    "switchAccount": "Switch account",
+    "switchFailed": "Could not switch account"
   },
   "Header": {
     "dashboard": "Dashboard",
@@ -1550,11 +1552,22 @@
       "fields": "Fields & tags",
       "deals": "Deals & currency",
       "members": "Team members",
-      "api": "API keys"
+      "api": "API keys",
+      "sub-accounts": "Sub-accounts"
     },
     "groups": {
       "account": "Account",
       "workspace": "Workspace"
+    },
+    "subAccounts": {
+      "title": "Sub-accounts",
+      "description": "Create and name unlimited sub-accounts. Each has separate data and settings.",
+      "placeholder": "Sub-account name",
+      "create": "Create",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "loadFailed": "Could not load sub-accounts",
+      "createFailed": "Could not create sub-account"
     },
     "profile": {
       "title": "Your profile",

@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useAuth } from "@/hooks/use-auth";
 
 interface ConversationListProps {
   activeConversationId: string | null;
@@ -54,6 +55,7 @@ export function ConversationList({
   resyncToken = 0,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
+  const { accountId } = useAuth();
   
   const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(() => [
     { label: t("filterAll"), value: "all" },
@@ -98,6 +100,7 @@ export function ConversationList({
       const { data, error } = await supabase
         .from("conversations")
         .select(CONVERSATION_SELECT)
+        .eq("account_id", accountId!)
         .order("last_message_at", { ascending: false });
 
       if (cancelled) return;
@@ -132,7 +135,11 @@ export function ConversationList({
     const supabase = createClient();
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.from("tags").select("*").order("name");
+      const { data } = await supabase
+        .from("tags")
+        .select("*")
+        .eq("account_id", accountId!)
+        .order("name");
       if (!cancelled && data) setTags(data as Tag[]);
     })();
     return () => {

@@ -29,7 +29,7 @@ type DB = SupabaseClient
 
 // --- 1. Metric cards ---------------------------------------------------
 
-export async function loadMetrics(db: DB): Promise<MetricsBundle> {
+export async function loadMetrics(db: DB, accountId: string): Promise<MetricsBundle> {
   const todayStart = startOfLocalDay().toISOString()
   const yesterdayStart = daysAgoStart(1).toISOString()
 
@@ -43,33 +43,38 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
     messagesToday,
     messagesYesterday,
   ] = await Promise.all([
-    db.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'open'),
+    db.from('conversations').select('id', { count: 'exact', head: true }).eq('account_id', accountId).eq('status', 'open'),
     db
       .from('conversations')
       .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
       .eq('status', 'open')
       .gte('created_at', todayStart),
     db
       .from('conversations')
       .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
       .eq('status', 'open')
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
-    db.from('contacts').select('id', { count: 'exact', head: true }).gte('created_at', todayStart),
+    db.from('contacts').select('id', { count: 'exact', head: true }).eq('account_id', accountId).gte('created_at', todayStart),
     db
       .from('contacts')
       .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
-    db.from('deals').select('value, status').eq('status', 'open'),
+    db.from('deals').select('value, status').eq('account_id', accountId).eq('status', 'open'),
     db
       .from('messages')
       .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
       .eq('sender_type', 'agent')
       .gte('created_at', todayStart),
     db
       .from('messages')
       .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
       .eq('sender_type', 'agent')
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
@@ -104,11 +109,13 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
 export async function loadConversationsSeries(
   db: DB,
   rangeDays: number,
+  accountId: string,
 ): Promise<ConversationsSeriesPoint[]> {
   const start = daysAgoStart(rangeDays - 1).toISOString()
   const { data, error } = await db
     .from('messages')
     .select('created_at, sender_type')
+    .eq('account_id', accountId)
     .gte('created_at', start)
     .order('created_at', { ascending: true })
   if (error) throw error
@@ -130,10 +137,10 @@ export async function loadConversationsSeries(
 
 // --- 3. Pipeline donut -------------------------------------------------
 
-export async function loadPipelineDonut(db: DB): Promise<PipelineDonutData> {
+export async function loadPipelineDonut(db: DB, accountId: string): Promise<PipelineDonutData> {
   const [stagesRes, dealsRes] = await Promise.all([
-    db.from('pipeline_stages').select('id, name, color, pipeline_id, position').order('position'),
-    db.from('deals').select('stage_id, value, status').eq('status', 'open'),
+    db.from('pipeline_stages').select('id, name, color, pipeline_id, position').eq('account_id', accountId).order('position'),
+    db.from('deals').select('stage_id, value, status').eq('account_id', accountId).eq('status', 'open'),
   ])
 
   const stages =
@@ -169,7 +176,7 @@ export async function loadPipelineDonut(db: DB): Promise<PipelineDonutData> {
 
 // --- 4. Response time by day of week ----------------------------------
 
-export async function loadResponseTime(db: DB): Promise<ResponseTimeSummary> {
+export async function loadResponseTime(db: DB, accountId: string): Promise<ResponseTimeSummary> {
   // Pull the last 14 days of messages in one shot, then walk per
   // conversation to find each "first inbound" → "first subsequent
   // outbound" pair. 14 days gives us both "this week" + "last week"
@@ -179,6 +186,7 @@ export async function loadResponseTime(db: DB): Promise<ResponseTimeSummary> {
   const { data, error } = await db
     .from('messages')
     .select('conversation_id, sender_type, created_at')
+    .eq('account_id', accountId)
     .gte('created_at', fourteenDaysAgo)
     .order('conversation_id', { ascending: true })
     .order('created_at', { ascending: true })
@@ -265,7 +273,7 @@ export async function loadResponseTime(db: DB): Promise<ResponseTimeSummary> {
 
 // --- 5. Activity feed --------------------------------------------------
 
-export async function loadActivity(db: DB, limit = 20): Promise<ActivityItem[]> {
+export async function loadActivity(db: DB, accountId: string, limit = 20): Promise<ActivityItem[]> {
   // Pull ~10 from each source (plenty of headroom after merge-sort),
   // then interleave by timestamp. The individual per-table limits
   // keep the payload small; the final limit is enforced after sort.
@@ -273,27 +281,32 @@ export async function loadActivity(db: DB, limit = 20): Promise<ActivityItem[]> 
     db
       .from('messages')
       .select('id, content_text, sender_type, created_at, conversation_id, conversations(contact_id, contacts(name, phone))')
+      .eq('account_id', accountId)
       .eq('sender_type', 'customer')
       .order('created_at', { ascending: false })
       .limit(10),
     db
       .from('contacts')
       .select('id, name, phone, created_at')
+      .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(10),
     db
       .from('deals')
       .select('id, title, updated_at, stage:pipeline_stages(name)')
+      .eq('account_id', accountId)
       .order('updated_at', { ascending: false })
       .limit(10),
     db
       .from('broadcasts')
       .select('id, name, status, total_recipients, created_at')
+      .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(5),
     db
       .from('automation_logs')
       .select('id, trigger_event, status, created_at, automation:automations(name), contact:contacts(name, phone)')
+      .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(10),
   ])

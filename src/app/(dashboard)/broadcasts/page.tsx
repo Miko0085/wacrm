@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/use-auth';
 import { Broadcast } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -58,6 +59,7 @@ function RateCell({
 }
 
 export default function BroadcastsPage() {
+  const { accountId } = useAuth();
   const router = useRouter();
   const t = useTranslations('Broadcasts.page');
   const tStatus = useTranslations('Broadcasts.status');
@@ -75,6 +77,7 @@ export default function BroadcastsPage() {
       const { data, error: fetchError } = await supabase
         .from('broadcasts')
         .select('*')
+        .eq('account_id', accountId!)
         .order('created_at', { ascending: false });
 
       if (fetchError) throw fetchError;

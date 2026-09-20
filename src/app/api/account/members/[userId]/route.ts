@@ -81,7 +81,8 @@ export async function PATCH(
       );
     }
 
-    const { error } = await ctx.supabase.rpc("set_member_role", {
+    const { error } = await ctx.supabase.rpc("set_account_member_role", {
+      p_account_id: ctx.accountId,
       p_user_id: userId,
       p_new_role: role,
     });
@@ -109,13 +110,14 @@ export async function DELETE(
 
     const { userId } = await params;
 
-    const { data, error } = await ctx.supabase.rpc("remove_account_member", {
+    const { error } = await ctx.supabase.rpc("remove_account_membership", {
+      p_account_id: ctx.accountId,
       p_user_id: userId,
     });
 
     if (error) return rpcErrorToResponse(error);
 
-    return NextResponse.json({ ok: true, newPersonalAccountId: data });
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return toErrorResponse(err);
   }

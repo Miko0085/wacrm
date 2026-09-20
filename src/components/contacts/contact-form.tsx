@@ -109,6 +109,7 @@ export function ContactForm({
     const { data } = await supabase
       .from('tags')
       .select('*')
+      .eq('account_id', accountId!)
       .order('name');
     if (data) setTags(data);
     setLoadingTags(false);
@@ -159,7 +160,8 @@ export function ContactForm({
             company: company.trim() || null,
             updated_at: new Date().toISOString(),
           })
-          .eq('id', contactId);
+          .eq('id', contactId)
+          .eq('account_id', accountId);
         if (error) throw error;
       } else {
         const { data, error } = await supabase

@@ -1,42 +1,11 @@
-// ============================================================
-// Server-side account context — for API routes and server
-// components. Reads the caller's profile + account in one round
-// trip and verifies role on demand.
-//
-// IMPORTANT: this module is server-only. It imports the Supabase
-// SSR client (`@/lib/supabase/server`), which reads `next/headers`
-// cookies. Importing it from a client component will fail at
-// build time with the standard Next.js "You're importing a
-// component that needs `next/headers`" error — that's the
-// boundary check; we don't need the `server-only` package.
-//
-// Calling convention
-// ------------------
-// API routes don't need to redo `supabase.auth.getUser()` — they
-// receive a fully-loaded context from `requireRole`:
-//
-//   try {
-//     const ctx = await requireRole("admin");
-//     // ctx.supabase — the SSR client (RLS scoped to this user)
-//     // ctx.userId  — auth.uid()
-//     // ctx.accountId / ctx.role / ctx.account
-//   } catch (err) {
-//     return errorResponse(err); // see toErrorResponse() below
-//   }
-// ============================================================
-
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createClient } from "@/lib/supabase/server";
 import { hasMinRole, isAccountRole, type AccountRole } from "./roles";
 
-// ------------------------------------------------------------
-// Errors
-//
-// Custom classes so API routes can map a single `catch` to the
-// right HTTP status without sprinkling 401/403 strings everywhere.
-// ------------------------------------------------------------
+export const ACTIVE_ACCOUNT_COOKIE = "wacrm_active_account_id";
 
 export class UnauthorizedError extends Error {
   readonly status = 401 as const;
@@ -54,18 +23,6 @@ export class ForbiddenError extends Error {
   }
 }
 
-/**
- * Convert one of the typed errors above (or anything else) into a
- * `NextResponse`. Routes can do:
- *
- *   } catch (err) {
- *     return toErrorResponse(err);
- *   }
- *
- * Unknown errors collapse to 500 with the generic message — we
- * never leak `err.message` for non-classified errors to keep
- * server internals out of the wire.
- */
 export function toErrorResponse(err: unknown): NextResponse {
   if (err instanceof UnauthorizedError || err instanceof ForbiddenError) {
     return NextResponse.json({ error: err.message }, { status: err.status });
@@ -74,113 +31,203 @@ export function toErrorResponse(err: unknown): NextResponse {
   return NextResponse.json({ error: "Internal server error" }, { status: 500 });
 }
 
-// ------------------------------------------------------------
-// Account context
-// ------------------------------------------------------------
+export interface AvailableAccount {
+  id: string;
+  name: string;
+  default_currency: string | null;
+  role: AccountRole;
+  membershipId: string;
+  parent_account_id?: string | null;
+}
 
 export interface AccountContext {
-  /** Supabase SSR client, RLS scoped to the calling user. */
   supabase: SupabaseClient;
-  /** `auth.uid()` for the caller. Always defined when this resolves. */
   userId: string;
-  /** Caller's account_id from their profile row. */
   accountId: string;
-  /** Caller's role within their account. */
   role: AccountRole;
-  /** Lightweight account meta — id + name. */
-  account: { id: string; name: string };
+  account: { id: string; name: string; default_currency: string | null; parent_account_id?: string | null };
+  membership: {
+    id: string;
+    account_id: string;
+    user_id: string;
+    role: AccountRole;
+    created_at: string;
+  };
+  accounts: AvailableAccount[];
+}
+
+interface MembershipRow {
+  id: string;
+  account_id: string;
+  user_id: string;
+  role: string;
+  created_at: string;
 }
 
 /**
- * Resolve the caller's user + account + role in one round trip.
- *
- * Throws `UnauthorizedError` if there's no Supabase session.
- * Throws `ForbiddenError` if the profile is missing account
- * fields (shouldn't happen post-017 migration; defensive guard
- * against profile rows that pre-date the backfill or were
- * inserted by hand).
- *
- * Use `requireRole(min)` instead when the route also needs a
- * minimum-role check — it's a thin wrapper over this.
+ * Resolve the active account for this request. The HTTP-only cookie is a
+ * preference, never authority: its value is accepted only when it matches a
+ * membership loaded for the authenticated user. Missing/stale values fall
+ * back deterministically to the oldest membership, then account UUID.
  */
-export async function getCurrentAccount(): Promise<AccountContext> {
+export async function requireActiveAccount(): Promise<AccountContext> {
   const supabase = await createClient();
-
   const {
     data: { user },
-    error: userErr,
+    error: userError,
   } = await supabase.auth.getUser();
-  if (userErr || !user) {
-    throw new UnauthorizedError();
+  if (userError || !user) throw new UnauthorizedError();
+
+  // Use a dedicated RPC so this helper remains compatible with stale
+  // PostgREST schemas and the legacy two-query unit-test client.
+  if (typeof (supabase as { rpc?: unknown }).rpc !== "function") {
+    return resolveLegacyProfileContext(supabase, user.id);
   }
 
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("account_id, account_role")
-    .eq("user_id", user.id)
-    .maybeSingle();
+  const { data: membershipRows, error: membershipError } = await supabase.rpc(
+    "list_my_account_memberships",
+    { p_user_id: user.id },
+  );
 
-  if (error) {
-    console.error("[getCurrentAccount] profile fetch error:", error);
+  if (membershipError) {
+    console.error(
+      "[requireActiveAccount] membership fetch error:",
+      membershipError,
+    );
     throw new ForbiddenError("Could not load account context");
   }
-  if (!data || !data.account_id || !data.account_role) {
-    // Pre-migration profile, or a manual insert that skipped the
-    // signup trigger. The user is authenticated but the app has
-    // no way to scope their queries — treat as forbidden.
-    throw new ForbiddenError("Profile is not linked to an account");
-  }
-  if (!isAccountRole(data.account_role)) {
-    // The DB enum should make this impossible, but a future
-    // migration that broadens the enum without updating TS would
-    // hit this — surface it rather than silently widening.
-    throw new ForbiddenError(`Unknown account role: ${data.account_role}`);
+
+  const memberships = ((membershipRows as MembershipRow[] | null) ?? []).flatMap((row) =>
+    isAccountRole(row.role) ? [{ ...row, role: row.role }] : [],
+  );
+  if (memberships.length === 0) {
+    return resolveLegacyProfileContext(supabase, user.id);
   }
 
-  // Load the account with a plain point lookup by id rather than an
-  // embedded FK join (`account:accounts!inner(...)`). The embed forces
-  // PostgREST to resolve the profiles.account_id → accounts.id
-  // relationship from its schema cache; when that cache is stale — a
-  // common Supabase state right after a migration adds the FK, or when
-  // migrations are applied out of band — the embed fails hard with
-  // PGRST200 ("could not find a relationship … in the schema cache")
-  // and takes down the entire account context (issue #294). A lookup by
-  // id needs no relationship inference and is gated by the same accounts
-  // RLS, so it stays robust against cache staleness and older schemas.
-  const { data: account, error: accountErr } = await supabase
+  const requestedId = (await cookies()).get(ACTIVE_ACCOUNT_COOKIE)?.value;
+  const membership =
+    memberships.find((row) => row.account_id === requestedId) ?? memberships[0];
+
+  const { data: accountRows, error: accountError } = await supabase
     .from("accounts")
-    .select("id, name")
-    .eq("id", data.account_id)
-    .maybeSingle();
+    .select("id, name, default_currency, parent_account_id")
+    .in(
+      "id",
+      memberships.map((row) => row.account_id),
+    );
 
-  if (accountErr) {
-    console.error("[getCurrentAccount] account fetch error:", accountErr);
+  if (accountError) {
+    console.error("[requireActiveAccount] account fetch error:", accountError);
     throw new ForbiddenError("Could not load account context");
   }
-  if (!account) {
-    // account_id points at no readable account row — orphaned profile
-    // or an RLS gap. Same "can't scope this user" outcome as above.
-    throw new ForbiddenError("Profile is not linked to an account");
-  }
+
+  const byId = new Map((accountRows ?? []).map((row) => [row.id, row]));
+  const account = byId.get(membership.account_id);
+  if (!account) throw new ForbiddenError("Profile is not linked to an account");
+
+  const accounts: AvailableAccount[] = memberships.flatMap((row) => {
+    const linked = byId.get(row.account_id);
+    return linked
+      ? [
+          {
+            id: linked.id,
+            name: linked.name,
+            default_currency: linked.default_currency ?? null,
+            role: row.role,
+            membershipId: row.id,
+            parent_account_id: linked.parent_account_id ?? null,
+          },
+        ]
+      : [];
+  });
 
   return {
     supabase,
     userId: user.id,
-    accountId: data.account_id,
-    role: data.account_role,
-    account: { id: account.id, name: account.name },
+    accountId: membership.account_id,
+    role: membership.role,
+    account: {
+      id: account.id,
+      name: account.name,
+      default_currency: account.default_currency ?? null,
+      parent_account_id: account.parent_account_id ?? null,
+    },
+    membership: {
+      id: membership.id,
+      account_id: membership.account_id,
+      user_id: membership.user_id,
+      role: membership.role,
+      created_at: membership.created_at,
+    },
+    accounts,
   };
 }
 
-/**
- * Resolve the caller's account context and enforce a minimum role.
- *
- * Throws `UnauthorizedError` / `ForbiddenError` as documented on
- * `getCurrentAccount`, plus `ForbiddenError("Insufficient role")`
- * when the caller is below `min`.
- */
+async function resolveLegacyProfileContext(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<AccountContext> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("account_id, account_role")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    console.error("[requireActiveAccount] legacy profile fetch error:", error);
+    throw new ForbiddenError("Could not load account context");
+  }
+  if (!data?.account_id || !isAccountRole(data.account_role)) {
+    throw new ForbiddenError("Profile is not linked to an account");
+  }
+
+  const { data: account, error: accountError } = await supabase
+    .from("accounts")
+    .select("id, name, default_currency, parent_account_id")
+    .eq("id", data.account_id)
+    .maybeSingle();
+  if (accountError) {
+    console.error("[requireActiveAccount] legacy account fetch error:", accountError);
+    throw new ForbiddenError("Could not load account context");
+  }
+  if (!account) throw new ForbiddenError("Profile is not linked to an account");
+
+  const membership = {
+    id: `legacy:${data.account_id}:${userId}`,
+    account_id: data.account_id,
+    user_id: userId,
+    role: data.account_role,
+    created_at: "1970-01-01T00:00:00.000Z",
+  };
+  return {
+    supabase,
+    userId,
+    accountId: data.account_id,
+    role: data.account_role,
+    account: {
+      id: account.id,
+      name: account.name,
+      default_currency: account.default_currency ?? null,
+      parent_account_id: account.parent_account_id ?? null,
+    },
+    membership,
+    accounts: [
+      {
+        id: account.id,
+        name: account.name,
+        default_currency: account.default_currency ?? null,
+        role: data.account_role,
+        membershipId: membership.id,
+        parent_account_id: account.parent_account_id ?? null,
+      },
+    ],
+  };
+}
+
+/** Compatibility alias for existing routes. */
+export const getCurrentAccount = requireActiveAccount;
+
 export async function requireRole(min: AccountRole): Promise<AccountContext> {
-  const ctx = await getCurrentAccount();
+  const ctx = await requireActiveAccount();
   if (!hasMinRole(ctx.role, min)) {
     throw new ForbiddenError(
       `This action requires the '${min}' role or higher`,

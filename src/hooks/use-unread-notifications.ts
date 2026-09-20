@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { Notification } from "@/types";
+import { useAuth } from "@/hooks/use-auth";
 
 /**
  * Count of unread notifications for the current user. Used by the
@@ -13,9 +14,11 @@ import type { Notification } from "@/types";
  * `useTotalUnread` for conversations.
  */
 export function useUnreadNotifications(): number {
+  const { accountId } = useAuth();
   const [count, setCount] = useState(0);
 
   useEffect(() => {
+    if (!accountId) return;
     const supabase = createClient();
     let cancelled = false;
 
@@ -25,6 +28,7 @@ export function useUnreadNotifications(): number {
       const { count: unreadCount, error } = await supabase
         .from("notifications")
         .select("*", { count: "exact", head: true })
+        .eq("account_id", accountId!)
         .is("read_at", null);
       if (cancelled || error) return;
       setCount(unreadCount ?? 0);
@@ -57,7 +61,7 @@ export function useUnreadNotifications(): number {
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [accountId]);
 
   return count;
 }

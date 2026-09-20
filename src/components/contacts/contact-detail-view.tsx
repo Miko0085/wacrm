@@ -98,13 +98,14 @@ export function ContactDetailView({
   const [loadingDeals, setLoadingDeals] = useState(false);
 
   const fetchContact = useCallback(async () => {
-    if (!contactId) return;
+    if (!contactId || !accountId) return;
     setLoading(true);
 
     const { data } = await supabase
       .from('contacts')
       .select('*')
       .eq('id', contactId)
+      .eq('account_id', accountId)
       .single();
 
     if (data) {
@@ -121,7 +122,7 @@ export function ContactDetailView({
     if (!contactId) return;
 
     const [tagsRes, contactTagsRes] = await Promise.all([
-      supabase.from('tags').select('*').order('name'),
+      supabase.from('tags').select('*').eq('account_id', accountId!).order('name'),
       supabase.from('contact_tags').select('tag_id').eq('contact_id', contactId),
     ]);
 
@@ -139,6 +140,7 @@ export function ContactDetailView({
       .from('contact_notes')
       .select('*')
       .eq('contact_id', contactId)
+      .eq('account_id', accountId!)
       .order('created_at', { ascending: false });
 
     if (data) setNotes(data);
@@ -150,7 +152,7 @@ export function ContactDetailView({
     setLoadingCustom(true);
 
     const [fieldsRes, valuesRes] = await Promise.all([
-      supabase.from('custom_fields').select('*').order('field_name'),
+      supabase.from('custom_fields').select('*').eq('account_id', accountId!).order('field_name'),
       supabase
         .from('contact_custom_values')
         .select('*')
@@ -175,6 +177,7 @@ export function ContactDetailView({
       .from('deals')
       .select('*, stage:pipeline_stages(*)')
       .eq('contact_id', contactId)
+      .eq('account_id', accountId!)
       .order('created_at', { ascending: false });
     setDeals((data ?? []) as Deal[]);
     setLoadingDeals(false);
@@ -213,7 +216,8 @@ export function ContactDetailView({
         company: editCompany.trim() || null,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', contactId);
+      .eq('id', contactId)
+      .eq('account_id', accountId!);
 
     if (error) {
       toast.error(t('toastUpdateFailed'));
@@ -281,7 +285,8 @@ export function ContactDetailView({
     const { error } = await supabase
       .from('contact_notes')
       .delete()
-      .eq('id', noteId);
+      .eq('id', noteId)
+      .eq('account_id', accountId!);
 
     if (error) {
       toast.error(t('toastNoteDeleteFailed'));

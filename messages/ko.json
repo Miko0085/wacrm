@@ -38,7 +38,9 @@
     "defaultAvatar": "아바타",
     "menuProfile": "프로필",
     "menuSettings": "설정",
-    "menuSignOut": "로그아웃"
+    "menuSignOut": "로그아웃",
+    "switchAccount": "계정 전환",
+    "switchFailed": "계정을 전환할 수 없습니다"
   },
   "Header": {
     "dashboard": "대시보드",
@@ -1539,7 +1541,18 @@
       "step4_5": "\"messages\" 웹훅 필드를 구독",
       "metaDocs": "Meta WhatsApp API 문서"
     },
+    "subAccounts": {
+      "title": "Sub-accounts",
+      "description": "Sub-accounts를 만들고 이름을 지정합니다.",
+      "placeholder": "Sub-account name",
+      "create": "Create",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "loadFailed": "Could not load sub-accounts",
+      "createFailed": "Could not create sub-account"
+    },
     "sections": {
+      "sub-accounts": "Sub-accounts",
       "overview": "개요",
       "profile": "내 프로필",
       "security": "로그인 & 보안",

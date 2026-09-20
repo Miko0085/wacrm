@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dialog';
 import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
 
 interface AudienceConfig {
   type: string;
@@ -47,6 +48,7 @@ export function Step4ScheduleSend({
   progress,
 }: Step4Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
@@ -60,7 +62,8 @@ export function Step4ScheduleSend({
         if (audience.type === 'all') {
           const { count } = await supabase
             .from('contacts')
-            .select('*', { count: 'exact', head: true });
+            .select('*', { count: 'exact', head: true })
+            .eq('account_id', accountId!);
           setEstimatedReach(count ?? 0);
         } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
           const { data: contactTags } = await supabase
@@ -81,7 +84,7 @@ export function Step4ScheduleSend({
     }
 
     calculateReach();
-  }, [audience]);
+  }, [audience, accountId]);
 
   const audienceLabel =
     audience.type === 'all'

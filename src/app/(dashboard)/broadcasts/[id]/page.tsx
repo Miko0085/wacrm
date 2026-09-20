@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/use-auth';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -145,6 +146,7 @@ function downloadBlob(filename: string, content: string) {
 }
 
 export default function BroadcastDetailPage() {
+  const { accountId } = useAuth();
   const params = useParams();
   const router = useRouter();
   const t = useTranslations('Broadcasts.detail');
@@ -172,6 +174,7 @@ export default function BroadcastDetailPage() {
         .from('broadcasts')
         .select('*')
         .eq('id', broadcastId)
+        .eq('account_id', accountId!)
         .single();
 
       if (bcError) throw bcError;
@@ -288,7 +291,8 @@ export default function BroadcastDetailPage() {
     const { error: delErr } = await supabase
       .from('broadcasts')
       .delete()
-      .eq('id', broadcastId);
+      .eq('id', broadcastId)
+      .eq('account_id', accountId!);
     setDeleting(false);
     if (delErr) {
       toast.error(t('toastFailedDelete', { error: delErr.message }));

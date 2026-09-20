@@ -27,6 +27,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { AccountRole } from "@/lib/auth/roles";
+import { AccountSwitcher } from "@/components/layout/account-switcher";
 
 // Per-role chip metadata used in the sidebar's account strip + the
 // Members tab roster. Keeping this near both consumers in a single
@@ -204,6 +205,8 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        <AccountSwitcher />
 
         {/* Main navigation */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">

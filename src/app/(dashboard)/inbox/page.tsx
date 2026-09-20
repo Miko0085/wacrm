@@ -4,6 +4,7 @@ import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import {
   CONVERSATION_SELECT,
   normalizeConversation,
@@ -33,6 +34,7 @@ export default function InboxPage() {
 }
 
 function InboxPageInner() {
+  const { accountId } = useAuth();
   const t = useTranslations("Inbox.page");
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -76,7 +78,7 @@ function InboxPageInner() {
     } catch {
       // localStorage can throw in private-browsing / sandboxed contexts.
     }
-  }, []);
+  }, [accountId]);
 
   const handleToggleContactPanel = useCallback(() => {
     setContactPanelOpen((prev) => {
@@ -88,7 +90,7 @@ function InboxPageInner() {
       }
       return next;
     });
-  }, []);
+  }, [accountId]);
 
   // Fire the deep-link auto-select exactly once per URL — subsequent
   // list refreshes (realtime, manual refetch) must not snap the user
@@ -137,6 +139,7 @@ function InboxPageInner() {
         .from("conversations")
         .select(CONVERSATION_SELECT)
         .eq("id", convId)
+        .eq("account_id", accountId!)
         .maybeSingle();
       if (error) {
         // Supabase errors have non-enumerable properties — log fields
@@ -170,7 +173,7 @@ function InboxPageInner() {
     } finally {
       hydratingConvIdsRef.current.delete(convId);
     }
-  }, []);
+  }, [accountId]);
 
   // Check WhatsApp connection status on mount
   useEffect(() => {
@@ -189,12 +192,6 @@ function InboxPageInner() {
       // the "WhatsApp not connected" banner would show in the
       // shared inbox even though the admin had it configured.
       // Resolve account_id via the profile and query by that.
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("account_id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const accountId = profile?.account_id as string | undefined;
       if (!accountId) {
         setWhatsappConnected(false);
         return;
@@ -210,7 +207,7 @@ function InboxPageInner() {
     };
 
     checkConnection();
-  }, []);
+  }, [accountId]);
 
   // Handle realtime message events
   const handleMessageEvent = useCallback(
