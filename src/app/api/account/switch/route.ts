@@ -51,7 +51,7 @@ export async function POST(request: Request) {
   (await cookies()).set(ACTIVE_ACCOUNT_COOKIE, body.account_id, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+   secure: process.env.NEXT_PUBLIC_SITE_URL?.startsWith("https://") ?? false,
     path: "/",
     maxAge: 60 * 60 * 24 * 365,
   });
