@@ -67,6 +67,7 @@ const CONTENT_TYPE_MAP: Record<string, NormalizedContentType> = {
   video: 'video',
   location: 'location',
   button_reply: 'interactive',
+  quick_reply: 'interactive',
   list_reply: 'interactive',
 }
 
@@ -127,6 +128,7 @@ export function normalizeGupshupInboundMessage(
       break
     }
     case 'button_reply':
+    case 'quick_reply':
     case 'list_reply': {
       // Live-confirmed against a real Gupshup sandbox tap (see
       // docs/GUPSHUP_TEST_REPORT.md): the tapped option's stable id
