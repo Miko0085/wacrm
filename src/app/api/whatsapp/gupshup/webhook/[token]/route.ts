@@ -13,6 +13,7 @@ import {
   resolveInboundThread,
   finishProcessingInboundMessage,
 } from '@/lib/whatsapp/inbound-pipeline'
+import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 
 // See src/app/api/whatsapp/webhook/route.ts (Meta) for why `after()` +
 // a generous maxDuration matter here too — ack Gupshup fast, keep
@@ -131,6 +132,20 @@ async function processGupshupWebhook(
       )
       if (!thread) return
       await finishProcessingInboundMessage(db, accountId, configOwnerUserId, thread, normalized)
+
+      // Stable business-action event for downstream CRM sync. The generic
+      // message.received webhook still fires inside the shared inbound
+      // pipeline; this event avoids forcing consumers to map localized
+      // button titles back to an action id.
+      if (normalized.interactiveReplyId) {
+        await dispatchWebhookEvent(db, accountId, 'interactive.reply', {
+          contact_id: thread.contactRecord.id,
+          conversation_id: thread.conversation.id,
+          whatsapp_message_id: normalized.providerMessageId,
+          reply_id: normalized.interactiveReplyId,
+          reply_title: normalized.contentText,
+        })
+      }
       return
     }
 
@@ -192,13 +207,25 @@ async function applyUserEvent(
       ? { wa_marketing_status: 'OPTED_OUT', wa_opt_out_at: nowIso, wa_consent_source: 'gupshup_user_event' }
       : { wa_marketing_status: 'OPTED_IN', wa_opt_in_at: nowIso, wa_consent_source: 'gupshup_user_event' }
 
-  const { error } = await db
+  const { data: contacts, error } = await db
     .from('contacts')
     .update(update)
     .eq('account_id', accountId)
     .eq('phone_normalized', normalizedPhone)
+    .select('id')
 
   if (error) {
     console.error('[gupshup-webhook] Failed to apply user-event consent update:', error.message)
+    return
+  }
+
+  const webhookEvent = event.type === 'opted-out' ? 'contact.opted_out' : 'contact.opted_in'
+  for (const contact of contacts ?? []) {
+    await dispatchWebhookEvent(db, accountId, webhookEvent, {
+      contact_id: contact.id,
+      status: update.wa_marketing_status,
+      source: 'gupshup_user_event',
+      occurred_at: nowIso,
+    })
   }
 }
