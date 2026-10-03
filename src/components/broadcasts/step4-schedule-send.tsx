@@ -22,6 +22,8 @@ interface AudienceConfig {
   type: string;
   tagIds?: string[];
   csvContacts?: { phone: string; name?: string }[];
+  smartListId?: string;
+  smartListName?: string;
 }
 
 interface Step4Props {
@@ -59,7 +61,12 @@ export function Step4ScheduleSend({
       try {
         const supabase = createClient();
 
-        if (audience.type === 'all') {
+        if (audience.type === 'smart_list' && audience.smartListId) {
+          const { data, error } = await supabase.rpc('count_smart_list_contacts', {
+            p_smart_list_id: audience.smartListId,
+          });
+          setEstimatedReach(error ? 0 : Number(data ?? 0));
+        } else if (audience.type === 'all') {
           const { count } = await supabase
             .from('contacts')
             .select('*', { count: 'exact', head: true })
@@ -87,24 +94,23 @@ export function Step4ScheduleSend({
   }, [audience, accountId]);
 
   const audienceLabel =
-    audience.type === 'all'
-      ? t('scheduleSend.audienceAll')
-      : audience.type === 'tags'
-        ? t('scheduleSend.audienceTags')
-        : audience.type === 'csv'
-          ? t('scheduleSend.audienceCsv')
-          : t('scheduleSend.audienceField');
+    audience.type === 'smart_list'
+      ? `Smart List${audience.smartListName ? ` · ${audience.smartListName}` : ''}`
+      : audience.type === 'all'
+        ? t('scheduleSend.audienceAll')
+        : audience.type === 'tags'
+          ? t('scheduleSend.audienceTags')
+          : audience.type === 'csv'
+            ? t('scheduleSend.audienceCsv')
+            : t('scheduleSend.audienceField');
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold text-foreground">{t('scheduleSend.title')}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t('scheduleSend.subtitle')}
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{t('scheduleSend.subtitle')}</p>
       </div>
 
-      {/* Broadcast Name */}
       <div>
         <label className="mb-1.5 block text-sm font-medium text-foreground">{t('scheduleSend.broadcastName')}</label>
         <Input
@@ -115,8 +121,7 @@ export function Step4ScheduleSend({
         />
       </div>
 
-      {/* Summary Card */}
-      <div className="rounded-xl border border-border bg-card/50 p-4 space-y-3">
+      <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
         <p className="text-sm font-medium text-foreground">{t('scheduleSend.summary')}</p>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
@@ -147,7 +152,6 @@ export function Step4ScheduleSend({
         </div>
       </div>
 
-      {/* Processing overlay */}
       {isProcessing && (
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -191,49 +195,49 @@ export function Step4ScheduleSend({
           )}
 
           <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
-          <DialogTrigger
-            render={
-              <Button
-                disabled={!name.trim() || isProcessing}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              />
-            }
-          >
-            <Send className="h-4 w-4" />
-            {t('scheduleSend.sendNow')}
-          </DialogTrigger>
-          <DialogContent className="border-border bg-popover sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="text-popover-foreground">Confirm Broadcast</DialogTitle>
-              <DialogDescription className="text-muted-foreground">
-                You are about to send this broadcast to{' '}
-                <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
-                contacts using the{' '}
-                <span className="font-medium text-popover-foreground">{template.name}</span> template.
-                This action cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setShowConfirm(false)}
-                className="border-border text-muted-foreground"
-              >
-                {t('cancel')}
-              </Button>
-              <Button
-                onClick={() => {
-                  setShowConfirm(false);
-                  onSend();
-                }}
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                <Send className="h-4 w-4" />
-                {t('scheduleSend.sendNow')}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            <DialogTrigger
+              render={
+                <Button
+                  disabled={!name.trim() || isProcessing || estimatedReach === 0}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                />
+              }
+            >
+              <Send className="h-4 w-4" />
+              {t('scheduleSend.sendNow')}
+            </DialogTrigger>
+            <DialogContent className="border-border bg-popover sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-popover-foreground">Confirm Broadcast</DialogTitle>
+                <DialogDescription className="text-muted-foreground">
+                  You are about to send this broadcast to{' '}
+                  <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
+                  contacts using the{' '}
+                  <span className="font-medium text-popover-foreground">{template.name}</span> template.
+                  This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowConfirm(false)}
+                  className="border-border text-muted-foreground"
+                >
+                  {t('cancel')}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowConfirm(false);
+                    onSend();
+                  }}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  <Send className="h-4 w-4" />
+                  {t('scheduleSend.sendNow')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>
