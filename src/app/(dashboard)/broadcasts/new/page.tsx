@@ -7,10 +7,13 @@ import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
 import { MessageTemplate } from '@/types';
 import { Step1ChooseTemplate } from '@/components/broadcasts/step1-choose-template';
-import { Step2SelectAudience } from '@/components/broadcasts/step2-select-audience';
+import {
+  Step2SelectAudienceWithSmartLists,
+  type SmartAudienceConfig,
+} from '@/components/broadcasts/step2-select-audience-with-smart-lists';
 import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
 import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
-import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
+import { useBroadcastSendingWithSmartLists } from '@/hooks/use-broadcast-sending-with-smart-lists';
 import { Check } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -25,21 +28,11 @@ export default function NewBroadcastPage() {
   const router = useRouter();
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
-  const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSending();
+  const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSendingWithSmartLists();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
-  const [audience, setAudience] = useState<{
-    type: 'all' | 'tags' | 'custom_field' | 'csv';
-    tagIds?: string[];
-    customField?: {
-      fieldId: string;
-      operator: 'is' | 'is_not' | 'contains';
-      value: string;
-    };
-    csvContacts?: { phone: string; name?: string }[];
-    excludeTagIds?: string[];
-  }>({ type: 'all' });
+  const [audience, setAudience] = useState<SmartAudienceConfig>({ type: 'all' });
   const [variables, setVariables] = useState<
     Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>
   >({});
@@ -53,35 +46,32 @@ export default function NewBroadcastPage() {
       const broadcastId = await createAndSendBroadcast({
         name,
         template,
-        audience: {
-          type: audience.type,
-          tagIds: audience.tagIds,
-          customField: audience.customField,
-          csvContacts: audience.csvContacts,
-          excludeTagIds: audience.excludeTagIds,
-        },
+        audience:
+          audience.type === 'smart_list'
+            ? {
+                type: 'smart_list',
+                smartListId: audience.smartListId!,
+                smartListName: audience.smartListName,
+              }
+            : {
+                type: audience.type,
+                tagIds: audience.tagIds,
+                customField: audience.customField,
+                csvContacts: audience.csvContacts,
+                excludeTagIds: audience.excludeTagIds,
+              },
         variables,
         headerMediaUrl,
       });
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
-      // Previously swallowed with console.error — the wizard would
-      // just no-op, leaving the user confused. Surface the reason.
       const message = err instanceof Error ? err.message : 'Broadcast failed';
       console.error('Broadcast failed:', err);
       toast.error(message);
     }
   }
 
-  /**
-   * Writes a draft broadcast row — no recipients, no sending. The user
-   * can revisit it via the list page to finish the flow later. We
-   * don't persist the in-progress audience/variable config here
-   * because the current schema doesn't carry it past `audience_filter`
-   * and `template_variables`; those are enough for the user to
-   * recognize the draft but not to exactly round-trip into the wizard.
-   * A full resume-draft UX is a future polish.
-   */
+  /** Save a draft broadcast row without creating recipients or sending. */
   async function handleSaveDraft() {
     if (!template || !name.trim()) {
       toast.error(t('toastGiveName'));
@@ -108,10 +98,17 @@ export default function NewBroadcastPage() {
       template_name: template.name,
       template_language: template.language ?? 'en_US',
       template_variables: variables,
-      audience_filter: {
-        type: audience.type,
-        tagIds: audience.tagIds,
-      },
+      audience_filter:
+        audience.type === 'smart_list'
+          ? {
+              type: 'smart_list',
+              smartListId: audience.smartListId,
+              smartListName: audience.smartListName,
+            }
+          : {
+              type: audience.type,
+              tagIds: audience.tagIds,
+            },
       status: 'draft',
       total_recipients: 0,
       sent_count: 0,
@@ -131,15 +128,11 @@ export default function NewBroadcastPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-8">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t('subtitle')}
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{t('subtitle')}</p>
       </div>
 
-      {/* Step Indicator */}
       <div className="flex items-center justify-between">
         {steps.map((step, index) => {
           const isActive = index === currentStep;
@@ -179,7 +172,6 @@ export default function NewBroadcastPage() {
         })}
       </div>
 
-      {/* Step Content */}
       <div className="relative min-h-[400px]">
         <div
           className="transition-all duration-300 ease-in-out"
@@ -197,7 +189,7 @@ export default function NewBroadcastPage() {
             />
           )}
           {currentStep === 1 && (
-            <Step2SelectAudience
+            <Step2SelectAudienceWithSmartLists
               audience={audience}
               onUpdate={setAudience}
               onNext={() => setCurrentStep(2)}
