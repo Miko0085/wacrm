@@ -24,6 +24,8 @@ const steps = [
   { label: 'send', key: 'send' },
 ] as const;
 
+const CONTACT_BROADCAST_SELECTION_KEY = 'wacrm:broadcast-contact-selection';
+
 type VariableMap = Record<
   string,
   { type: 'static' | 'field' | 'custom_field'; value: string }
@@ -33,6 +35,7 @@ type StoredAudience = {
   type?: SmartAudienceConfig['type'];
   tagIds?: string[];
   customField?: SmartAudienceConfig['customField'];
+  csvContacts?: { phone: string; name?: string }[];
   excludeTagIds?: string[];
   smartListId?: string;
   smartListName?: string;
@@ -42,6 +45,7 @@ export default function NewBroadcastPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const draftId = searchParams.get('draft');
+  const source = searchParams.get('source');
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
   const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSendingWithSmartLists();
@@ -53,6 +57,32 @@ export default function NewBroadcastPage() {
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
   const [loadingDraft, setLoadingDraft] = useState(Boolean(draftId));
+
+  // Contacts -> Create broadcast stores a snapshot of the selected people
+  // in sessionStorage. Reuse the existing CSV audience path so the sender
+  // resolves the same account contacts by normalized phone without creating
+  // a second audience engine just for manual selections.
+  useEffect(() => {
+    if (draftId || source !== 'contacts') return;
+
+    try {
+      const raw = window.sessionStorage.getItem(CONTACT_BROADCAST_SELECTION_KEY);
+      if (!raw) return;
+      const rows = JSON.parse(raw) as { phone?: string; name?: string }[];
+      const contacts = Array.isArray(rows)
+        ? rows
+            .filter((row) => typeof row?.phone === 'string' && row.phone.trim().length > 0)
+            .map((row) => ({ phone: row.phone!.trim(), name: row.name || undefined }))
+        : [];
+
+      if (contacts.length > 0) {
+        setAudience({ type: 'csv', csvContacts: contacts });
+      }
+    } catch (error) {
+      console.error('Failed to restore selected contacts for broadcast:', error);
+      toast.error('Could not load the selected contacts. Please select them again.');
+    }
+  }, [draftId, source]);
 
   useEffect(() => {
     if (!draftId || !accountId) {
@@ -106,6 +136,7 @@ export default function NewBroadcastPage() {
               type: stored.type ?? 'all',
               tagIds: stored.tagIds,
               customField: stored.customField,
+              csvContacts: stored.csvContacts,
               excludeTagIds: stored.excludeTagIds,
             };
 
@@ -158,6 +189,9 @@ export default function NewBroadcastPage() {
           .eq('status', 'draft');
       }
 
+      if (source === 'contacts') {
+        window.sessionStorage.removeItem(CONTACT_BROADCAST_SELECTION_KEY);
+      }
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Broadcast failed';
@@ -196,6 +230,7 @@ export default function NewBroadcastPage() {
             type: audience.type,
             tagIds: audience.tagIds,
             customField: audience.customField,
+            csvContacts: audience.csvContacts,
             excludeTagIds: audience.excludeTagIds,
           };
 
@@ -231,6 +266,9 @@ export default function NewBroadcastPage() {
     if (error) {
       toast.error(t('toastFailedDraft', { error: error.message }));
       return;
+    }
+    if (source === 'contacts') {
+      window.sessionStorage.removeItem(CONTACT_BROADCAST_SELECTION_KEY);
     }
     toast.success(t('toastDraftSaved'));
     router.push('/broadcasts');
