@@ -312,6 +312,8 @@ $$;
 
 -- ------------------------------------------------------------
 -- Bulk marketing suppression / DNC
+-- Backup DB-level mutation helper. The Contacts UI uses the server API
+-- route so contact.opted_out webhooks are emitted to downstream CRM too.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.bulk_suppress_marketing(
   p_account_id UUID,
@@ -328,6 +330,7 @@ AS $$
 DECLARE
   v_ids UUID[];
   v_changed INTEGER := 0;
+  v_now TIMESTAMPTZ := NOW();
 BEGIN
   IF NOT is_account_member(p_account_id, 'agent') THEN
     RAISE EXCEPTION 'insufficient account permissions';
@@ -343,7 +346,9 @@ BEGIN
 
   UPDATE public.contacts c
   SET wa_marketing_status = 'OPTED_OUT',
-      updated_at = NOW()
+      wa_opt_out_at = v_now,
+      wa_consent_source = 'wacrm_bulk_dnc',
+      updated_at = v_now
   WHERE c.account_id = p_account_id
     AND c.id = ANY(v_ids)
     AND c.wa_marketing_status IS DISTINCT FROM 'OPTED_OUT';
