@@ -251,9 +251,26 @@ export function BulkContactAdvancedActions({
   async function suppressMarketing() {
     setWorking(true);
     try {
-      const { data, error } = await supabase.rpc('bulk_suppress_marketing', selectionParams);
-      if (error) throw error;
-      toast.success(`Marketing suppressed for ${Number(data ?? 0).toLocaleString()} contacts.`);
+      const response = await fetch('/api/contacts/bulk-suppress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contact_ids: allMatching ? null : selectedIds,
+          all_matching: allMatching,
+          filter_tag_ids: filterTagIds.length > 0 ? filterTagIds : null,
+          search: search.trim() || null,
+        }),
+      });
+      const payload = (await response.json()) as {
+        success?: boolean;
+        changed?: number;
+        error?: string;
+        detail?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || payload.detail || 'Suppression failed');
+      }
+      toast.success(`Marketing suppressed for ${Number(payload.changed ?? 0).toLocaleString()} contacts.`);
       setDialog(null);
       await onChanged?.();
     } catch (error) {
