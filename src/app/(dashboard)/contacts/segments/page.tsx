@@ -31,6 +31,8 @@ import {
 
 type MatchMode = 'all' | 'any';
 
+type SmartListType = 'dynamic' | 'static';
+
 interface SmartList {
   id: string;
   account_id: string;
@@ -39,6 +41,7 @@ interface SmartList {
   match_mode: MatchMode;
   include_tag_ids: string[];
   exclude_tag_ids: string[];
+  list_type?: SmartListType;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -145,6 +148,7 @@ export default function SmartListsPage() {
   }
 
   function openEdit(list: SmartList) {
+    if ((list.list_type ?? 'dynamic') === 'static') return;
     setEditing(list);
     setDraft({
       name: list.name,
@@ -187,6 +191,7 @@ export default function SmartListsPage() {
         match_mode: draft.matchMode,
         include_tag_ids: draft.includeTagIds,
         exclude_tag_ids: draft.excludeTagIds,
+        list_type: 'dynamic' as const,
       };
 
       if (editing) {
@@ -194,7 +199,8 @@ export default function SmartListsPage() {
           .from('smart_lists')
           .update(payload)
           .eq('id', editing.id)
-          .eq('account_id', accountId);
+          .eq('account_id', accountId)
+          .eq('list_type', 'dynamic');
         if (error) throw error;
         toast.success('Smart List updated');
       } else {
@@ -250,7 +256,7 @@ export default function SmartListsPage() {
           </div>
           <h1 className="text-2xl font-bold text-foreground">Smart Lists</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Dynamic audiences that update automatically when contact tags change.
+            Dynamic audiences from live rules and static snapshots saved from selected contacts.
           </p>
         </div>
         <div className="flex gap-2">
@@ -264,7 +270,7 @@ export default function SmartListsPage() {
           </Button>
           <Button onClick={openCreate} disabled={!canEdit}>
             <Plus className="size-4" />
-            New Smart List
+            New Dynamic List
           </Button>
         </div>
       </div>
@@ -278,71 +284,89 @@ export default function SmartListsPage() {
           <ListFilter className="mb-3 size-9 text-muted-foreground" />
           <h2 className="font-semibold text-foreground">No Smart Lists yet</h2>
           <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Save a tag rule once and reuse the live audience in broadcasts.
+            Create a dynamic tag rule here, or select contacts on the Contacts page and save them as a static Smart List.
           </p>
           <Button className="mt-4" onClick={openCreate} disabled={!canEdit}>
             <Plus className="size-4" />
-            Create Smart List
+            Create Dynamic List
           </Button>
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-          {lists.map((list) => (
-            <div key={list.id} className="rounded-lg border border-border bg-card p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h2 className="truncate font-semibold text-foreground">{list.name}</h2>
-                  {list.description && (
-                    <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{list.description}</p>
-                  )}
-                </div>
-                {canEdit && (
-                  <div className="flex shrink-0 gap-1">
-                    <Button variant="ghost" size="icon" onClick={() => openEdit(list)} aria-label="Edit Smart List">
-                      <Pencil className="size-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(list)} aria-label="Delete Smart List">
-                      <Trash2 className="size-4" />
-                    </Button>
+          {lists.map((list) => {
+            const isStatic = (list.list_type ?? 'dynamic') === 'static';
+            return (
+              <div key={list.id} className="rounded-lg border border-border bg-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="truncate font-semibold text-foreground">{list.name}</h2>
+                      <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {isStatic ? 'Static' : 'Dynamic'}
+                      </span>
+                    </div>
+                    {list.description && (
+                      <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{list.description}</p>
+                    )}
                   </div>
-                )}
-              </div>
-
-              <div className="mt-4 flex items-center gap-2 text-sm text-foreground">
-                <Users className="size-4 text-muted-foreground" />
-                <span className="font-medium">{counts[list.id]?.toLocaleString() ?? '—'}</span>
-                <span className="text-muted-foreground">contacts now</span>
-              </div>
-
-              <div className="mt-4 space-y-2 text-xs">
-                <div className="text-muted-foreground">
-                  Match <span className="font-medium uppercase text-foreground">{list.match_mode}</span> selected tags
+                  {canEdit && (
+                    <div className="flex shrink-0 gap-1">
+                      {!isStatic && (
+                        <Button variant="ghost" size="icon" onClick={() => openEdit(list)} aria-label="Edit Smart List">
+                          <Pencil className="size-4" />
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(list)} aria-label="Delete Smart List">
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {(list.include_tag_ids ?? []).map((id) => (
-                    <span key={id} className="rounded-full border border-border bg-muted px-2 py-1 text-foreground">
-                      + {tagsById[id]?.name ?? 'Deleted tag'}
-                    </span>
-                  ))}
-                  {(list.exclude_tag_ids ?? []).map((id) => (
-                    <span key={id} className="rounded-full border border-border bg-background px-2 py-1 text-muted-foreground">
-                      − {tagsById[id]?.name ?? 'Deleted tag'}
-                    </span>
-                  ))}
-                  {list.include_tag_ids.length === 0 && list.exclude_tag_ids.length === 0 && (
-                    <span className="text-muted-foreground">All contacts</span>
+
+                <div className="mt-4 flex items-center gap-2 text-sm text-foreground">
+                  <Users className="size-4 text-muted-foreground" />
+                  <span className="font-medium">{counts[list.id]?.toLocaleString() ?? '—'}</span>
+                  <span className="text-muted-foreground">{isStatic ? 'contacts in snapshot' : 'contacts now'}</span>
+                </div>
+
+                <div className="mt-4 space-y-2 text-xs">
+                  {isStatic ? (
+                    <p className="text-muted-foreground">
+                      Fixed membership captured from a Contacts selection. It can be reused as a broadcast audience.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="text-muted-foreground">
+                        Match <span className="font-medium uppercase text-foreground">{list.match_mode}</span> selected tags
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(list.include_tag_ids ?? []).map((id) => (
+                          <span key={id} className="rounded-full border border-border bg-muted px-2 py-1 text-foreground">
+                            + {tagsById[id]?.name ?? 'Deleted tag'}
+                          </span>
+                        ))}
+                        {(list.exclude_tag_ids ?? []).map((id) => (
+                          <span key={id} className="rounded-full border border-border bg-background px-2 py-1 text-muted-foreground">
+                            − {tagsById[id]?.name ?? 'Deleted tag'}
+                          </span>
+                        ))}
+                        {list.include_tag_ids.length === 0 && list.exclude_tag_ids.length === 0 && (
+                          <span className="text-muted-foreground">All contacts</span>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editing ? 'Edit Smart List' : 'New Smart List'}</DialogTitle>
+            <DialogTitle>{editing ? 'Edit Dynamic Smart List' : 'New Dynamic Smart List'}</DialogTitle>
             <DialogDescription>
               Membership is recalculated from current tags whenever the list is used.
             </DialogDescription>
@@ -420,7 +444,7 @@ export default function SmartListsPage() {
           <DialogHeader>
             <DialogTitle>Delete Smart List?</DialogTitle>
             <DialogDescription>
-              Contacts and tags will not be deleted. Only the saved dynamic rule is removed.
+              Contacts and tags will not be deleted. Only this saved Smart List is removed.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
