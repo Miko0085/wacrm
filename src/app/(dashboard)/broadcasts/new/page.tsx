@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
@@ -14,7 +14,7 @@ import {
 import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
 import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSendingWithSmartLists } from '@/hooks/use-broadcast-sending-with-smart-lists';
-import { Check } from 'lucide-react';
+import { Check, Loader2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 const steps = [
@@ -24,8 +24,24 @@ const steps = [
   { label: 'send', key: 'send' },
 ] as const;
 
+type VariableMap = Record<
+  string,
+  { type: 'static' | 'field' | 'custom_field'; value: string }
+>;
+
+type StoredAudience = {
+  type?: SmartAudienceConfig['type'];
+  tagIds?: string[];
+  customField?: SmartAudienceConfig['customField'];
+  excludeTagIds?: string[];
+  smartListId?: string;
+  smartListName?: string;
+};
+
 export default function NewBroadcastPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const draftId = searchParams.get('draft');
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
   const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSendingWithSmartLists();
@@ -33,11 +49,79 @@ export default function NewBroadcastPage() {
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
   const [audience, setAudience] = useState<SmartAudienceConfig>({ type: 'all' });
-  const [variables, setVariables] = useState<
-    Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>
-  >({});
+  const [variables, setVariables] = useState<VariableMap>({});
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
+  const [loadingDraft, setLoadingDraft] = useState(Boolean(draftId));
+
+  useEffect(() => {
+    if (!draftId || !accountId) {
+      setLoadingDraft(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadDraft() {
+      const supabase = createClient();
+      const { data: draft, error } = await supabase
+        .from('broadcasts')
+        .select('*')
+        .eq('id', draftId)
+        .eq('account_id', accountId)
+        .eq('status', 'draft')
+        .single();
+
+      if (cancelled) return;
+      if (error || !draft) {
+        toast.error('Draft not found or is no longer editable.');
+        router.replace('/broadcasts');
+        return;
+      }
+
+      const { data: templates, error: templateError } = await supabase
+        .from('message_templates')
+        .select('*')
+        .eq('account_id', accountId)
+        .eq('name', draft.template_name)
+        .eq('language', draft.template_language ?? 'en_US')
+        .limit(1);
+
+      if (cancelled) return;
+      if (templateError || !templates?.[0]) {
+        toast.error('The template used by this draft is no longer available.');
+        setLoadingDraft(false);
+        return;
+      }
+
+      const stored = (draft.audience_filter ?? {}) as StoredAudience;
+      const restoredAudience: SmartAudienceConfig =
+        stored.type === 'smart_list'
+          ? {
+              type: 'smart_list',
+              smartListId: stored.smartListId,
+              smartListName: stored.smartListName,
+            }
+          : {
+              type: stored.type ?? 'all',
+              tagIds: stored.tagIds,
+              customField: stored.customField,
+              excludeTagIds: stored.excludeTagIds,
+            };
+
+      setName(draft.name ?? '');
+      setTemplate(templates[0] as MessageTemplate);
+      setVariables((draft.template_variables ?? {}) as VariableMap);
+      setAudience(restoredAudience);
+      setCurrentStep(3);
+      setLoadingDraft(false);
+    }
+
+    loadDraft();
+    return () => {
+      cancelled = true;
+    };
+  }, [draftId, accountId, router]);
 
   async function handleSend() {
     if (!template) return;
@@ -63,6 +147,17 @@ export default function NewBroadcastPage() {
         variables,
         headerMediaUrl,
       });
+
+      if (draftId && accountId) {
+        const supabase = createClient();
+        await supabase
+          .from('broadcasts')
+          .delete()
+          .eq('id', draftId)
+          .eq('account_id', accountId)
+          .eq('status', 'draft');
+      }
+
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Broadcast failed';
@@ -71,7 +166,6 @@ export default function NewBroadcastPage() {
     }
   }
 
-  /** Save a draft broadcast row without creating recipients or sending. */
   async function handleSaveDraft() {
     if (!template || !name.trim()) {
       toast.error(t('toastGiveName'));
@@ -91,24 +185,26 @@ export default function NewBroadcastPage() {
       return;
     }
 
-    const { error } = await supabase.from('broadcasts').insert({
-      user_id: user.id,
-      account_id: accountId,
+    const audienceFilter =
+      audience.type === 'smart_list'
+        ? {
+            type: 'smart_list',
+            smartListId: audience.smartListId,
+            smartListName: audience.smartListName,
+          }
+        : {
+            type: audience.type,
+            tagIds: audience.tagIds,
+            customField: audience.customField,
+            excludeTagIds: audience.excludeTagIds,
+          };
+
+    const payload = {
       name: name.trim(),
       template_name: template.name,
       template_language: template.language ?? 'en_US',
       template_variables: variables,
-      audience_filter:
-        audience.type === 'smart_list'
-          ? {
-              type: 'smart_list',
-              smartListId: audience.smartListId,
-              smartListName: audience.smartListName,
-            }
-          : {
-              type: audience.type,
-              tagIds: audience.tagIds,
-            },
+      audience_filter: audienceFilter,
       status: 'draft',
       total_recipients: 0,
       sent_count: 0,
@@ -116,8 +212,22 @@ export default function NewBroadcastPage() {
       read_count: 0,
       replied_count: 0,
       failed_count: 0,
-    });
+    };
 
+    const operation = draftId
+      ? supabase
+          .from('broadcasts')
+          .update(payload)
+          .eq('id', draftId)
+          .eq('account_id', accountId)
+          .eq('status', 'draft')
+      : supabase.from('broadcasts').insert({
+          user_id: user.id,
+          account_id: accountId,
+          ...payload,
+        });
+
+    const { error } = await operation;
     if (error) {
       toast.error(t('toastFailedDraft', { error: error.message }));
       return;
@@ -126,11 +236,23 @@ export default function NewBroadcastPage() {
     router.push('/broadcasts');
   }
 
+  if (loadingDraft) {
+    return (
+      <div className="flex min-h-[420px] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{t('subtitle')}</p>
+        <h1 className="text-2xl font-bold text-foreground">
+          {draftId ? 'Continue draft' : t('title')}
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {draftId ? 'Review the saved broadcast and send it when ready.' : t('subtitle')}
+        </p>
       </div>
 
       <div className="flex items-center justify-between">
