@@ -14,17 +14,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Radio, Plus, Loader2 } from 'lucide-react';
+import { Radio, Plus, Loader2, PlayCircle } from 'lucide-react';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
 
-/**
- * Poll cadence while any broadcast is sending. Kept modest so we don't
- * beat on Supabase — the aggregate trigger in migration 003 keeps
- * counts consistent; we just need to surface the freshest snapshot.
- */
 const POLL_INTERVAL_MS = 5_000;
 
 function percent(numerator: number, denominator: number): number {
@@ -39,7 +34,6 @@ function RateCell({
 }: {
   value: number;
   total: number;
-  /** Tailwind bg class for the fill, e.g. "bg-primary" */
   color: string;
 }) {
   const pct = percent(value, total);
@@ -67,8 +61,6 @@ export default function BroadcastsPage() {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Used to kick off polling only while something is actively sending.
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function fetchBroadcasts() {
@@ -109,9 +101,6 @@ export default function BroadcastsPage() {
       pollTimer.current = null;
     }
 
-    // Pause polling while the tab is hidden — keeps Supabase cold when
-    // the user is away, and ensures a fresh fetch the moment they
-    // refocus so they don't see stale data on return.
     function handleVisibilityChange() {
       if (!anySending) return;
       if (document.visibilityState === 'hidden') {
@@ -155,8 +144,6 @@ export default function BroadcastsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Top indeterminate progress bar: only visible while a broadcast
-          is mid-send. Pure CSS animation so no extra deps. */}
       {anySending && (
         <div
           role="progressbar"
@@ -186,9 +173,7 @@ export default function BroadcastsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t('subtitle')}
-          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{t('subtitle')}</p>
         </div>
         <GatedButton
           canAct={canCreate}
@@ -205,9 +190,7 @@ export default function BroadcastsPage() {
         <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-border bg-card">
           <Radio className="mb-3 h-10 w-10 text-muted-foreground" />
           <p className="text-sm font-medium text-foreground">{t('noBroadcastsYet')}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t('createFirst')}
-          </p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('createFirst')}</p>
           <GatedButton
             canAct={canCreate}
             gateReason="create broadcasts"
@@ -232,16 +215,24 @@ export default function BroadcastsPage() {
                 <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.read')}</TableHead>
                 <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
                 <TableHead className="hidden text-muted-foreground sm:table-cell">{t('table.date')}</TableHead>
+                <TableHead className="w-36" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {broadcasts.map((broadcast) => {
                 const status = getBroadcastStatus(broadcast.status);
+                const isDraft = broadcast.status === 'draft';
                 return (
                   <TableRow
                     key={broadcast.id}
                     className="cursor-pointer border-border hover:bg-muted/50"
-                    onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
+                    onClick={() =>
+                      router.push(
+                        isDraft
+                          ? `/broadcasts/new?draft=${broadcast.id}`
+                          : `/broadcasts/${broadcast.id}`,
+                      )
+                    }
                   >
                     <TableCell className="font-medium text-foreground">
                       {broadcast.name}
@@ -281,6 +272,20 @@ export default function BroadcastsPage() {
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground sm:table-cell">
                       {new Date(broadcast.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell onClick={(event) => event.stopPropagation()}>
+                      {isDraft && (
+                        <GatedButton
+                          canAct={canCreate}
+                          gateReason="continue broadcast drafts"
+                          size="sm"
+                          onClick={() => router.push(`/broadcasts/new?draft=${broadcast.id}`)}
+                          className="whitespace-nowrap"
+                        >
+                          <PlayCircle className="h-4 w-4" />
+                          Continue
+                        </GatedButton>
+                      )}
                     </TableCell>
                   </TableRow>
                 );
