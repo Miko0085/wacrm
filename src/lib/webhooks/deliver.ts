@@ -39,6 +39,57 @@ interface EndpointRow {
   secret: string;
 }
 
+type WebhookData = Record<string, unknown>;
+
+/**
+ * `message.status_updated` historically carried only conversation_id +
+ * provider message id + status. Downstream CRMs should not have to do a
+ * second conversation lookup just to resolve the WACRM contact, so enrich
+ * the payload from the canonical conversation row before it is signed.
+ *
+ * This is additive/backwards compatible: all existing fields stay intact.
+ * Resolving by conversation id also makes repeated provider callbacks
+ * deterministic — the same conversation always yields the same contact_id.
+ */
+async function enrichEventData(
+  db: SupabaseClient,
+  accountId: string,
+  event: WebhookEvent,
+  data: unknown,
+): Promise<unknown> {
+  if (event !== 'message.status_updated') return data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+
+  const statusData = data as WebhookData;
+  if (typeof statusData.contact_id === 'string' && statusData.contact_id) {
+    return statusData;
+  }
+
+  const conversationId = statusData.conversation_id;
+  if (typeof conversationId !== 'string' || !conversationId) {
+    throw new Error('message.status_updated requires conversation_id to resolve contact_id');
+  }
+
+  const { data: conversation, error } = await db
+    .from('conversations')
+    .select('contact_id')
+    .eq('id', conversationId)
+    .eq('account_id', accountId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`failed to resolve contact_id for status webhook: ${error.message}`);
+  }
+  if (!conversation?.contact_id) {
+    throw new Error(`conversation ${conversationId} has no resolvable contact_id`);
+  }
+
+  return {
+    ...statusData,
+    contact_id: conversation.contact_id,
+  };
+}
+
 /**
  * Deliver `event` (+ `data`) to every active endpoint of `accountId`
  * subscribed to it. Never throws.
@@ -59,6 +110,8 @@ export async function dispatchWebhookEvent(
 
     if (error || !rows || rows.length === 0) return;
 
+    const enrichedData = await enrichEventData(db, accountId, event, data);
+
     // Sign the exact bytes we send so a receiver can recompute the
     // HMAC over the raw request body. `id` is a per-delivery uuid the
     // receiver can dedupe on (deliveries are at-least-once and may
@@ -68,7 +121,7 @@ export async function dispatchWebhookEvent(
       event,
       occurred_at: new Date().toISOString(),
       account_id: accountId,
-      data,
+      data: enrichedData,
     });
     const tsSeconds = Math.floor(Date.now() / 1000);
 
