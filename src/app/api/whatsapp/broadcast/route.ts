@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
-import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
+import {
+  resolveTemplateRow,
+  templateBodyParams,
+  templateContentText,
+} from '@/lib/whatsapp/template-body'
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -22,60 +26,16 @@ interface BroadcastResult {
   error?: string
 }
 
-/**
- * Two input shapes are accepted:
- *
- *   NEW (preferred — supports per-recipient variable substitution):
- *     {
- *       recipients: Array<{ phone: string; params: string[] }>,
- *       template_name, template_language
- *     }
- *
- *   LEGACY (all phones receive the same params — kept so existing
- *   callers don't break):
- *     {
- *       phone_numbers: string[],
- *       template_params: string[],
- *       template_name, template_language
- *     }
- *
- * Previous implementation only supported the legacy shape, and the
- * sending hook was forced to ship every batch with `templateParams[0]`
- * — meaning every recipient got contact-0's personalization. The new
- * shape is what actually fixes that.
- */
 interface NewRecipient {
   phone: string
-  /** Body variable values, one per {{N}}. Legacy field. */
   params?: string[]
-  /**
-   * Structured per-send values (header text variable, media URL
-   * override, URL/COPY_CODE button values). When set, takes
-   * precedence over `params` for the body too — see
-   * sendTemplateMessage for the merge rules.
-   */
   messageParams?: SendTimeParams
 }
 
 export async function POST(request: Request) {
   try {
-    // Requires the 'agent' role — `canSendMessages` in lib/auth/roles is
-    // explicit that running broadcasts is a write operation and that
-    // viewers are read-only.
-    //
-    // This endpoint writes NOTHING to the database: it reads the config
-    // and template, then calls Meta directly. So unlike the rest of the
-    // app there was no RLS policy backstopping a missing role check —
-    // resolving `account_id` straight off the profile (which only needs
-    // 'viewer') was the ONLY gate, and it let a viewer blast a template
-    // to arbitrary phone numbers from the account's WhatsApp number.
-    // Nothing about that is recoverable after the fact, so the check has
-    // to happen here.
     const { supabase, accountId, userId } = await requireRole('agent')
 
-    // Per-user broadcast budget. Note: this limits how often a user
-    // can *start* a campaign, not how many messages go out inside
-    // one — the fan-out loop below runs without additional gating.
     const limit = checkRateLimit(`broadcast:${userId}`, RATE_LIMITS.broadcast)
     if (!limit.success) {
       return rateLimitResponse(limit)
@@ -90,7 +50,6 @@ export async function POST(request: Request) {
       template_params,
     } = body
 
-    // Normalize to a list of {phone, params} regardless of shape.
     let recipients: NewRecipient[]
     if (Array.isArray(newRecipients) && newRecipients.length > 0) {
       recipients = newRecipients
@@ -137,11 +96,6 @@ export async function POST(request: Request) {
 
     const provider = resolveWhatsAppProvider(config)
 
-    // Load the template row once so sendTemplateMessage can build
-    // header + button components on each iteration. Loading inside
-    // the loop would N+1 against Supabase for every recipient.
-    // Guard against a malformed local row crashing every send in
-    // the loop with the same opaque TypeError — fail loudly once.
     const resolvedTemplate = await resolveTemplateRow(
       supabase,
       accountId,
@@ -159,15 +113,10 @@ export async function POST(request: Request) {
     }
     const templateRow = resolvedTemplate.row
 
-    // Hard suppression: never send a broadcast/template message to a
-    // contact who has opted out of WhatsApp marketing, regardless of
-    // who's driving this request (dashboard wizard, or a direct caller
-    // of this route). Matched on the same digits-only phone_normalized
-    // key contacts dedup on (migration 022), so formatting differences
-    // ("+1 555…" vs "1555…") don't let a suppressed contact slip through.
     const sanitizedPhones = recipients
-      .map((r) => sanitizePhoneForMeta(r.phone))
+      .map((recipient) => sanitizePhoneForMeta(recipient.phone))
       .filter(Boolean)
+
     const { data: suppressedContacts } = await supabase
       .from('contacts')
       .select('phone_normalized')
@@ -175,8 +124,170 @@ export async function POST(request: Request) {
       .eq('wa_marketing_status', 'OPTED_OUT')
       .in('phone_normalized', sanitizedPhones)
     const suppressedPhones = new Set(
-      (suppressedContacts ?? []).map((c: { phone_normalized: string }) => c.phone_normalized),
+      (suppressedContacts ?? []).map(
+        (contact: { phone_normalized: string }) => contact.phone_normalized,
+      ),
     )
+
+    // Broadcast recipients already exist as WACRM contacts when the wizard
+    // calls this route (CSV rows are upserted before send). Load them once so
+    // successful template sends can be mirrored into Inbox without an N+1
+    // contact lookup. This is intentionally account-scoped.
+    const { data: contactRows, error: contactLookupError } = await supabase
+      .from('contacts')
+      .select('id, phone_normalized')
+      .eq('account_id', accountId)
+      .in('phone_normalized', sanitizedPhones)
+
+    if (contactLookupError) {
+      console.error(
+        '[broadcast] failed to preload contacts for Inbox persistence:',
+        contactLookupError.message,
+      )
+    }
+
+    const contactsByPhone = new Map<string, string>()
+    for (const contact of contactRows ?? []) {
+      if (contact.phone_normalized) {
+        contactsByPhone.set(contact.phone_normalized, contact.id)
+      }
+    }
+
+    const contactIds = [...new Set((contactRows ?? []).map((contact) => contact.id))]
+    const conversationByContact = new Map<string, string>()
+    if (contactIds.length > 0) {
+      const { data: existingConversations, error: conversationLookupError } =
+        await supabase
+          .from('conversations')
+          .select('id, contact_id')
+          .eq('account_id', accountId)
+          .in('contact_id', contactIds)
+
+      if (conversationLookupError) {
+        console.error(
+          '[broadcast] failed to preload conversations:',
+          conversationLookupError.message,
+        )
+      } else {
+        for (const conversation of existingConversations ?? []) {
+          conversationByContact.set(conversation.contact_id, conversation.id)
+        }
+      }
+    }
+
+    async function persistSentTemplate(
+      recipient: NewRecipient,
+      sanitizedPhone: string,
+      whatsappMessageId: string,
+    ) {
+      try {
+        const contactId = contactsByPhone.get(sanitizedPhone)
+        if (!contactId) {
+          console.warn(
+            `[broadcast] sent ${whatsappMessageId} but no WACRM contact matched ${sanitizedPhone}; Inbox row skipped`,
+          )
+          return
+        }
+
+        let conversationId = conversationByContact.get(contactId)
+        if (!conversationId) {
+          const { data: existing } = await supabase
+            .from('conversations')
+            .select('id')
+            .eq('account_id', accountId)
+            .eq('contact_id', contactId)
+            .maybeSingle()
+
+          if (existing?.id) {
+            conversationId = existing.id
+          } else {
+            const { data: created, error: createError } = await supabase
+              .from('conversations')
+              .insert({
+                account_id: accountId,
+                user_id: userId,
+                contact_id: contactId,
+              })
+              .select('id')
+              .single()
+
+            if (createError || !created) {
+              console.error(
+                `[broadcast] sent ${whatsappMessageId} but failed to create Inbox conversation:`,
+                createError?.message ?? 'unknown error',
+              )
+              return
+            }
+            conversationId = created.id
+          }
+          conversationByContact.set(contactId, conversationId)
+        }
+
+        const persistedText = templateContentText(
+          templateRow,
+          templateBodyParams(recipient.params, recipient.messageParams),
+          null,
+        )
+        const now = new Date().toISOString()
+
+        // message_id is Meta/Gupshup's wamid and is unique enough for status
+        // callbacks to update the same Inbox row later. Avoid a duplicate row
+        // if a caller retries persistence after an ambiguous HTTP response.
+        const { data: existingMessage } = await supabase
+          .from('messages')
+          .select('id')
+          .eq('message_id', whatsappMessageId)
+          .maybeSingle()
+
+        if (!existingMessage) {
+          const { error: messageError } = await supabase
+            .from('messages')
+            .insert({
+              conversation_id: conversationId,
+              sender_type: 'agent',
+              content_type: 'template',
+              content_text: persistedText,
+              template_name,
+              message_id: whatsappMessageId,
+              status: 'sent',
+            })
+
+          if (messageError) {
+            console.error(
+              `[broadcast] sent ${whatsappMessageId} but failed to persist Inbox message:`,
+              messageError.message,
+            )
+            return
+          }
+        }
+
+        const { error: conversationUpdateError } = await supabase
+          .from('conversations')
+          .update({
+            last_message_text: persistedText || `[Template: ${template_name}]`,
+            last_message_at: now,
+            updated_at: now,
+          })
+          .eq('id', conversationId)
+          .eq('account_id', accountId)
+
+        if (conversationUpdateError) {
+          console.error(
+            `[broadcast] failed to update Inbox conversation preview for ${whatsappMessageId}:`,
+            conversationUpdateError.message,
+          )
+        }
+      } catch (error) {
+        // Never classify a WhatsApp send as failed after Meta/Gupshup already
+        // accepted it. A persistence problem is logged for repair; returning a
+        // send failure here would cause callers to retry and potentially send
+        // the customer the same template twice.
+        console.error(
+          `[broadcast] sent ${whatsappMessageId} but Inbox persistence threw:`,
+          error instanceof Error ? error.message : error,
+        )
+      }
+    }
 
     const results: BroadcastResult[] = []
     let sentCount = 0
@@ -205,8 +316,6 @@ export async function POST(request: Request) {
         continue
       }
 
-      // Retry with phone variants on "not in allowed list" so numbers
-      // that differ only in a trunk-prefix 0 still reach recipients.
       const variants = phoneVariants(sanitized)
       let sentMessageId: string | null = null
       let lastError: string | null = null
@@ -232,11 +341,11 @@ export async function POST(request: Request) {
             break
           }
           lastError = errorMessage
-          // retry with next variant
         }
       }
 
       if (sentMessageId) {
+        await persistSentTemplate(recipient, sanitized, sentMessageId)
         results.push({
           phone: recipient.phone,
           status: 'sent',
@@ -246,7 +355,7 @@ export async function POST(request: Request) {
       } else {
         console.error(
           `Failed to send broadcast to ${recipient.phone}:`,
-          lastError
+          lastError,
         )
         results.push({
           phone: recipient.phone,
@@ -265,8 +374,6 @@ export async function POST(request: Request) {
       results,
     })
   } catch (error) {
-    // requireRole throws Unauthorized/Forbidden; toErrorResponse maps
-    // those to 401/403 and collapses anything else to a generic 500.
     console.error('Error in WhatsApp broadcast POST:', error)
     return toErrorResponse(error)
   }
