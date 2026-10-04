@@ -21,7 +21,13 @@ import { useAuth } from '@/hooks/use-auth';
 interface AudienceConfig {
   type: string;
   tagIds?: string[];
+  customField?: {
+    fieldId: string;
+    operator: 'is' | 'is_not' | 'contains';
+    value: string;
+  };
   csvContacts?: { phone: string; name?: string }[];
+  excludeTagIds?: string[];
   smartListId?: string;
   smartListName?: string;
 }
@@ -56,6 +62,8 @@ export function Step4ScheduleSend({
   const [loadingReach, setLoadingReach] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function calculateReach() {
       setLoadingReach(true);
       try {
@@ -65,32 +73,92 @@ export function Step4ScheduleSend({
           const { data, error } = await supabase.rpc('count_smart_list_contacts', {
             p_smart_list_id: audience.smartListId,
           });
-          setEstimatedReach(error ? 0 : Number(data ?? 0));
-        } else if (audience.type === 'all') {
-          const { count } = await supabase
+          if (!cancelled) setEstimatedReach(error ? 0 : Number(data ?? 0));
+          return;
+        }
+
+        if (audience.type === 'csv' && audience.csvContacts) {
+          if (!cancelled) setEstimatedReach(audience.csvContacts.length);
+          return;
+        }
+
+        if (!accountId) {
+          if (!cancelled) setEstimatedReach(0);
+          return;
+        }
+
+        let baseIds: Set<string> | null = null;
+        let allContactsCount: number | null = null;
+
+        if (audience.type === 'all') {
+          const { count, error } = await supabase
             .from('contacts')
             .select('*', { count: 'exact', head: true })
-            .eq('account_id', accountId!);
-          setEstimatedReach(count ?? 0);
-        } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
-          const { data: contactTags } = await supabase
+            .eq('account_id', accountId);
+          if (error) throw error;
+          allContactsCount = count ?? 0;
+        } else if (
+          audience.type === 'tags' &&
+          audience.tagIds &&
+          audience.tagIds.length > 0
+        ) {
+          const { data, error } = await supabase
             .from('contact_tags')
             .select('contact_id')
             .in('tag_id', audience.tagIds);
+          if (error) throw error;
+          baseIds = new Set((data ?? []).map((row) => row.contact_id));
+        } else if (
+          audience.type === 'custom_field' &&
+          audience.customField?.fieldId &&
+          audience.customField.value
+        ) {
+          const { fieldId, operator, value } = audience.customField;
+          let query = supabase
+            .from('contact_custom_values')
+            .select('contact_id')
+            .eq('custom_field_id', fieldId);
 
-          const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
-          setEstimatedReach(uniqueIds.size);
-        } else if (audience.type === 'csv' && audience.csvContacts) {
-          setEstimatedReach(audience.csvContacts.length);
+          if (operator === 'is') query = query.eq('value', value);
+          else if (operator === 'is_not') query = query.neq('value', value);
+          else query = query.ilike('value', `%${value}%`);
+
+          const { data, error } = await query;
+          if (error) throw error;
+          baseIds = new Set((data ?? []).map((row) => row.contact_id));
         } else {
-          setEstimatedReach(0);
+          if (!cancelled) setEstimatedReach(0);
+          return;
         }
+
+        let excludedIds = new Set<string>();
+        if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
+          const { data, error } = await supabase
+            .from('contact_tags')
+            .select('contact_id')
+            .in('tag_id', audience.excludeTagIds);
+          if (error) throw error;
+          excludedIds = new Set((data ?? []).map((row) => row.contact_id));
+        }
+
+        const reach =
+          baseIds === null
+            ? Math.max(0, (allContactsCount ?? 0) - excludedIds.size)
+            : [...baseIds].filter((id) => !excludedIds.has(id)).length;
+
+        if (!cancelled) setEstimatedReach(reach);
+      } catch (error) {
+        console.error('Failed to calculate broadcast reach:', error);
+        if (!cancelled) setEstimatedReach(0);
       } finally {
-        setLoadingReach(false);
+        if (!cancelled) setLoadingReach(false);
       }
     }
 
     calculateReach();
+    return () => {
+      cancelled = true;
+    };
   }, [audience, accountId]);
 
   const audienceLabel =
@@ -123,16 +191,16 @@ export function Step4ScheduleSend({
 
       <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
         <p className="text-sm font-medium text-foreground">{t('scheduleSend.summary')}</p>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div>
+        <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{t('scheduleSend.template')}</p>
-            <p className="text-foreground">{template.name}</p>
+            <p className="break-all text-foreground">{template.name}</p>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{t('scheduleSend.audience')}</p>
-            <p className="text-foreground">{audienceLabel}</p>
+            <p className="break-words text-foreground">{audienceLabel}</p>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">Estimated Reach</p>
             <div className="flex items-center gap-1.5">
               {loadingReach ? (
@@ -145,9 +213,9 @@ export function Step4ScheduleSend({
               )}
             </div>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">Language</p>
-            <p className="text-foreground">{template.language ?? 'en_US'}</p>
+            <p className="break-words text-foreground">{template.language ?? 'en_US'}</p>
           </div>
         </div>
       </div>
@@ -213,7 +281,7 @@ export function Step4ScheduleSend({
                   You are about to send this broadcast to{' '}
                   <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
                   contacts using the{' '}
-                  <span className="font-medium text-popover-foreground">{template.name}</span> template.
+                  <span className="break-all font-medium text-popover-foreground">{template.name}</span> template.
                   This action cannot be undone.
                 </DialogDescription>
               </DialogHeader>
