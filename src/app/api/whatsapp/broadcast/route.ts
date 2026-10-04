@@ -220,8 +220,15 @@ export async function POST(request: Request) {
             }
             conversationId = created.id
           }
-          conversationByContact.set(contactId, conversationId)
         }
+
+        if (!conversationId) {
+          console.error(
+            `[broadcast] sent ${whatsappMessageId} but Inbox conversation id could not be resolved`,
+          )
+          return
+        }
+        conversationByContact.set(contactId, conversationId)
 
         const persistedText = templateContentText(
           templateRow,
