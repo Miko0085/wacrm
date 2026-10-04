@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
@@ -49,6 +50,8 @@ import {
   SlidersHorizontal,
   Filter,
   X,
+  Tags,
+  Send,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
@@ -60,13 +63,17 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/hooks/use-auth';
 
 const PAGE_SIZE = 25;
+const CONTACT_BROADCAST_SELECTION_KEY = 'wacrm:broadcast-contact-selection';
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
 }
 
+type BulkTagMode = 'add' | 'remove';
+
 export default function ContactsPage() {
   const t = useTranslations('Contacts.page');
+  const router = useRouter();
   const supabase = createClient();
   const canEdit = useCan('send-messages');
   const canEditSettings = useCan('edit-settings');
@@ -96,6 +103,10 @@ export default function ContactsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectAllMatching, setSelectAllMatching] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const [bulkTagMode, setBulkTagMode] = useState<BulkTagMode>('add');
+  const [bulkTagIds, setBulkTagIds] = useState<string[]>([]);
+  const [bulkWorking, setBulkWorking] = useState(false);
 
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
   const fetchSeq = useRef(0);
@@ -296,6 +307,16 @@ export default function ContactsPage() {
     });
   }
 
+  function currentBulkRpcParams() {
+    return {
+      p_account_id: accountId!,
+      p_contact_ids: selectAllMatching ? null : [...selected],
+      p_all_matching: selectAllMatching,
+      p_filter_tag_ids: selectedTagIds.length > 0 ? selectedTagIds : null,
+      p_search: search.trim() || null,
+    };
+  }
+
   async function handleBulkDelete() {
     if (!accountId || bulkSelectedCount === 0) return;
     setDeleting(true);
@@ -320,6 +341,93 @@ export default function ContactsPage() {
 
     setDeleting(false);
     setBulkDeleteOpen(false);
+  }
+
+  function openBulkTagDialog(mode: BulkTagMode) {
+    setBulkTagMode(mode);
+    setBulkTagIds([]);
+    setBulkTagOpen(true);
+  }
+
+  function toggleBulkTag(tagId: string) {
+    setBulkTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
+    );
+  }
+
+  async function handleBulkTags() {
+    if (!accountId || bulkSelectedCount === 0 || bulkTagIds.length === 0) return;
+    setBulkWorking(true);
+
+    const { error } = await supabase.rpc('bulk_update_contact_tags', {
+      p_account_id: accountId,
+      p_action: bulkTagMode,
+      p_tag_ids: bulkTagIds,
+      p_contact_ids: selectAllMatching ? null : [...selected],
+      p_all_matching: selectAllMatching,
+      p_filter_tag_ids: selectedTagIds.length > 0 ? selectedTagIds : null,
+      p_search: search.trim() || null,
+    });
+
+    if (error) {
+      toast.error(`Failed to ${bulkTagMode} tags: ${error.message}`);
+    } else {
+      toast.success(
+        `${bulkTagMode === 'add' ? 'Added tags to' : 'Removed tags from'} ${bulkSelectedCount.toLocaleString()} selected contacts.`,
+      );
+      setBulkTagOpen(false);
+      setBulkTagIds([]);
+      await fetchContacts();
+    }
+    setBulkWorking(false);
+  }
+
+  async function handleCreateBroadcast() {
+    if (!accountId || bulkSelectedCount === 0) return;
+    setBulkWorking(true);
+
+    try {
+      const { data, error } = await supabase.rpc('resolve_bulk_contact_ids', currentBulkRpcParams());
+      if (error) throw error;
+
+      const ids = (data ?? []) as string[];
+      if (ids.length === 0) {
+        toast.error('No contacts found in the current selection.');
+        return;
+      }
+
+      const rows: { phone: string; name?: string }[] = [];
+      const chunkSize = 500;
+      for (let index = 0; index < ids.length; index += chunkSize) {
+        const chunk = ids.slice(index, index + chunkSize);
+        const { data: contactRows, error: contactError } = await supabase
+          .from('contacts')
+          .select('id,phone,name')
+          .eq('account_id', accountId)
+          .in('id', chunk);
+        if (contactError) throw contactError;
+        for (const contact of contactRows ?? []) {
+          if (contact.phone) {
+            rows.push({ phone: contact.phone, name: contact.name || undefined });
+          }
+        }
+      }
+
+      if (rows.length === 0) {
+        toast.error('The selected contacts do not have usable phone numbers.');
+        return;
+      }
+
+      window.sessionStorage.setItem(CONTACT_BROADCAST_SELECTION_KEY, JSON.stringify(rows));
+      router.push('/broadcasts/new?source=contacts');
+    } catch (error) {
+      console.error('Failed to prepare selected contacts for broadcast:', error);
+      toast.error(
+        `Failed to prepare broadcast audience: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    } finally {
+      setBulkWorking(false);
+    }
   }
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
@@ -475,17 +583,47 @@ export default function ContactsPage() {
       </div>
 
       {bulkSelectedCount > 0 && (
-        <div className="space-y-2 rounded-lg border border-border bg-muted/40 px-4 py-3">
+        <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-foreground">
+            <p className="text-sm font-medium text-foreground">
               {selectAllMatching
                 ? `All ${totalCount.toLocaleString()} matching contacts selected`
                 : t('selectedCount', { count: selected.size })}
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant="ghost" size="sm" onClick={clearSelection} className="text-muted-foreground hover:text-foreground">
                 {t('clearSelection')}
               </Button>
+              <GatedButton
+                size="sm"
+                canAct={canEdit}
+                gateReason="create broadcast"
+                onClick={handleCreateBroadcast}
+                disabled={bulkWorking}
+              >
+                {bulkWorking ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                Create Broadcast
+              </GatedButton>
+              <GatedButton
+                variant="outline"
+                size="sm"
+                canAct={canEdit}
+                gateReason="edit contact tags"
+                onClick={() => openBulkTagDialog('add')}
+              >
+                <Tags className="size-4" />
+                Add Tags
+              </GatedButton>
+              <GatedButton
+                variant="outline"
+                size="sm"
+                canAct={canEdit}
+                gateReason="edit contact tags"
+                onClick={() => openBulkTagDialog('remove')}
+              >
+                <Tags className="size-4" />
+                Remove Tags
+              </GatedButton>
               <GatedButton
                 variant="destructive"
                 size="sm"
@@ -747,6 +885,44 @@ export default function ContactsPage() {
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
               {deleting && <Loader2 className="size-4 animate-spin" />}
               {t('deleteBtn')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkTagOpen} onOpenChange={setBulkTagOpen}>
+        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {bulkTagMode === 'add' ? 'Add tags' : 'Remove tags'}
+            </DialogTitle>
+            <DialogDescription>
+              Apply this action to {bulkSelectedCount.toLocaleString()} selected contacts.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+            {allTags.length === 0 ? (
+              <p className="px-2 py-6 text-center text-sm text-muted-foreground">No tags found.</p>
+            ) : (
+              allTags.map((tag) => (
+                <label key={tag.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 hover:bg-muted/50">
+                  <Checkbox
+                    checked={bulkTagIds.includes(tag.id)}
+                    onCheckedChange={() => toggleBulkTag(tag.id)}
+                  />
+                  <span className="size-2.5 rounded-full" style={{ backgroundColor: tag.color }} />
+                  <span className="text-sm">{tag.name}</span>
+                </label>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkTagOpen(false)} disabled={bulkWorking}>
+              Cancel
+            </Button>
+            <Button onClick={handleBulkTags} disabled={bulkWorking || bulkTagIds.length === 0}>
+              {bulkWorking && <Loader2 className="size-4 animate-spin" />}
+              {bulkTagMode === 'add' ? 'Add selected tags' : 'Remove selected tags'}
             </Button>
           </DialogFooter>
         </DialogContent>
