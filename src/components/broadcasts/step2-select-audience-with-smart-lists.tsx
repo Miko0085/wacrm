@@ -29,6 +29,7 @@ interface SmartListRow {
   match_mode: 'all' | 'any';
   include_tag_ids: string[];
   exclude_tag_ids: string[];
+  list_type?: 'dynamic' | 'static';
 }
 
 export function Step2SelectAudienceWithSmartLists({
@@ -56,7 +57,7 @@ export function Step2SelectAudienceWithSmartLists({
       try {
         const { data } = await supabase
           .from('smart_lists')
-          .select('id,name,description,match_mode,include_tag_ids,exclude_tag_ids')
+          .select('id,name,description,match_mode,include_tag_ids,exclude_tag_ids,list_type')
           .eq('account_id', accountId!)
           .order('updated_at', { ascending: false });
         if (cancelled) return;
@@ -96,7 +97,7 @@ export function Step2SelectAudienceWithSmartLists({
           <div>
             <p className="text-sm font-medium text-foreground">Smart List</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Use a saved dynamic audience. Membership is recalculated from current tags at send time.
+              Use a saved dynamic audience or a static contact snapshot.
             </p>
           </div>
         </button>
@@ -118,7 +119,7 @@ export function Step2SelectAudienceWithSmartLists({
       <div>
         <h2 className="text-lg font-semibold text-foreground">Select Smart List</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          The audience is resolved live from the latest contact tags when you send.
+          Dynamic lists resolve from current rules at send time; static lists use their saved contact snapshot.
         </p>
       </div>
 
@@ -140,6 +141,7 @@ export function Step2SelectAudienceWithSmartLists({
         <div className="grid gap-3 sm:grid-cols-2">
           {lists.map((list) => {
             const isSelected = audience.smartListId === list.id;
+            const isStatic = (list.list_type ?? 'dynamic') === 'static';
             return (
               <button
                 type="button"
@@ -159,7 +161,12 @@ export function Step2SelectAudienceWithSmartLists({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">{list.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-medium text-foreground">{list.name}</p>
+                      <span className="rounded-full border border-border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {isStatic ? 'Static' : 'Dynamic'}
+                      </span>
+                    </div>
                     {list.description && (
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{list.description}</p>
                     )}
@@ -170,7 +177,9 @@ export function Step2SelectAudienceWithSmartLists({
                   </div>
                 </div>
                 <p className="mt-3 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  {list.match_mode === 'all' ? 'ALL' : 'ANY'} tags · {list.include_tag_ids.length} include · {list.exclude_tag_ids.length} exclude
+                  {isStatic
+                    ? 'Saved contact snapshot'
+                    : `${list.match_mode === 'all' ? 'ALL' : 'ANY'} tags · ${list.include_tag_ids.length} include · ${list.exclude_tag_ids.length} exclude`}
                 </p>
               </button>
             );
@@ -182,7 +191,7 @@ export function Step2SelectAudienceWithSmartLists({
         <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-foreground">
           <span className="font-medium">{selected.name}</span>
           <span className="ml-2 text-muted-foreground">
-            · {(counts[selected.id] ?? 0).toLocaleString()} contacts now
+            · {(counts[selected.id] ?? 0).toLocaleString()} contacts · {(selected.list_type ?? 'dynamic') === 'static' ? 'static snapshot' : 'dynamic'}
           </span>
         </div>
       )}
