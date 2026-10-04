@@ -336,8 +336,14 @@ delivery uuid you can dedupe on, and `data` varies by `event`:
 // conversation.created
 { "conversation_id": "…", "contact_id": "…" }
 // message.status_updated
-{ "whatsapp_message_id": "wamid.…", "conversation_id": "…", "status": "delivered" }
+{ "contact_id": "…", "conversation_id": "…", "whatsapp_message_id": "wamid.…", "status": "delivered" }
 ```
+
+For `message.status_updated`, `contact_id` is the WACRM Contact ID owned by
+the referenced conversation — the same ID returned by `/api/v1/contacts/{id}`
+and used by `message.received` / `interactive.reply`. The field is present for
+all delivery states (`pending`, `sent`, `delivered`, `read`, `failed`). Repeated
+status callbacks for the same conversation resolve to the same `contact_id`.
 
 Headers: `X-Wacrm-Event`, `X-Wacrm-Webhook-Id`, and `X-Wacrm-Signature`.
 
