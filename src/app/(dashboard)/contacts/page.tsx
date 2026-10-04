@@ -57,6 +57,7 @@ import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { ImportModal } from '@/components/contacts/import-modal';
 import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager';
+import { BulkContactAdvancedActions } from '@/components/contacts/bulk-contact-advanced-actions';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
@@ -97,9 +98,6 @@ export default function ContactsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Explicit selection may span multiple pages. Once selectAllMatching is
-  // enabled, the current search/tag result is represented server-side rather
-  // than materialising thousands of contact ids in the browser.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectAllMatching, setSelectAllMatching] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -219,12 +217,10 @@ export default function ContactsPage() {
   }, [supabase, page, search, selectedTagIds, tagsMap, t, accountId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTags();
   }, [fetchTags]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchContacts();
   }, [fetchContacts]);
 
@@ -582,7 +578,7 @@ export default function ContactsPage() {
         )}
       </div>
 
-      {bulkSelectedCount > 0 && (
+      {bulkSelectedCount > 0 && accountId && (
         <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm font-medium text-foreground">
@@ -624,6 +620,16 @@ export default function ContactsPage() {
                 <Tags className="size-4" />
                 Remove Tags
               </GatedButton>
+              <BulkContactAdvancedActions
+                accountId={accountId}
+                selectedIds={[...selected]}
+                allMatching={selectAllMatching}
+                filterTagIds={selectedTagIds}
+                search={search}
+                selectedCount={bulkSelectedCount}
+                canEdit={canEdit}
+                onChanged={fetchContacts}
+              />
               <GatedButton
                 variant="destructive"
                 size="sm"
