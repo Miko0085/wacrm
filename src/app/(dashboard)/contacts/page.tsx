@@ -68,6 +68,7 @@ const CONTACT_BROADCAST_SELECTION_KEY = 'wacrm:broadcast-contact-selection';
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
+  last_broadcast_at?: string | null;
 }
 
 type BulkTagMode = 'add' | 'remove';
@@ -193,10 +194,18 @@ export default function ContactsPage() {
     }
 
     const contactIds = contactRows.map((contact) => contact.id);
-    const { data: contactTags } = await supabase
-      .from('contact_tags')
-      .select('contact_id, tag_id')
-      .in('contact_id', contactIds);
+    const [{ data: contactTags }, { data: broadcastRows }] = await Promise.all([
+      supabase
+        .from('contact_tags')
+        .select('contact_id, tag_id')
+        .in('contact_id', contactIds),
+      supabase
+        .from('broadcast_recipients')
+        .select('contact_id, sent_at')
+        .in('contact_id', contactIds)
+        .not('sent_at', 'is', null)
+        .order('sent_at', { ascending: false }),
+    ]);
     if (seq !== fetchSeq.current) return;
 
     const tagsByContact: Record<string, string[]> = {};
@@ -205,12 +214,20 @@ export default function ContactsPage() {
       tagsByContact[ct.contact_id].push(ct.tag_id);
     });
 
+    const lastBroadcastByContact: Record<string, string> = {};
+    broadcastRows?.forEach((row) => {
+      if (row.sent_at && !lastBroadcastByContact[row.contact_id]) {
+        lastBroadcastByContact[row.contact_id] = row.sent_at;
+      }
+    });
+
     setContacts(
       contactRows.map((contact) => ({
         ...contact,
         tags: (tagsByContact[contact.id] ?? [])
           .map((tagId) => tagsMap[tagId])
           .filter(Boolean),
+        last_broadcast_at: lastBroadcastByContact[contact.id] ?? null,
       })),
     );
     setLoading(false);
@@ -679,6 +696,7 @@ export default function ContactsPage() {
               <TableHead className="hidden text-muted-foreground md:table-cell">{t('tableColumns.email')}</TableHead>
               <TableHead className="hidden text-muted-foreground lg:table-cell">{t('tableColumns.company')}</TableHead>
               <TableHead className="hidden text-muted-foreground md:table-cell">{t('tableColumns.tags')}</TableHead>
+              <TableHead className="hidden text-muted-foreground lg:table-cell">Last Broadcast</TableHead>
               <TableHead className="hidden text-muted-foreground lg:table-cell">{t('tableColumns.createdAt')}</TableHead>
               <TableHead className="w-12 text-muted-foreground" />
             </TableRow>
@@ -686,7 +704,7 @@ export default function ContactsPage() {
           <TableBody>
             {loading ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="py-12 text-center">
+                <TableCell colSpan={9} className="py-12 text-center">
                   <div className="flex flex-col items-center gap-2">
                     <Loader2 className="size-6 animate-spin text-primary" />
                     <p className="text-sm text-muted-foreground">{t('loading')}</p>
@@ -695,7 +713,7 @@ export default function ContactsPage() {
               </TableRow>
             ) : contacts.length === 0 ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="py-12 text-center">
+                <TableCell colSpan={9} className="py-12 text-center">
                   <div className="flex flex-col items-center gap-2">
                     <Users className="size-8 text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">
@@ -761,6 +779,24 @@ export default function ContactsPage() {
                         <span className="text-[10px] text-muted-foreground">+{contact.tags.length - 3}</span>
                       )}
                     </div>
+                  </TableCell>
+                  <TableCell className="hidden text-xs lg:table-cell">
+                    {contact.last_broadcast_at ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className={isRecentBroadcast(contact.last_broadcast_at) ? 'font-medium text-amber-500' : 'text-muted-foreground'}>
+                          {formatLastBroadcast(contact.last_broadcast_at)}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(contact.last_broadcast_at).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">Never</span>
+                    )}
                   </TableCell>
                   <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
                     {new Date(contact.created_at).toLocaleDateString('en-US', {
@@ -960,4 +996,21 @@ export default function ContactsPage() {
       </Dialog>
     </div>
   );
+}
+
+function formatLastBroadcast(value: string): string {
+  const sentAt = new Date(value);
+  const diffMs = Date.now() - sentAt.getTime();
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return sentAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function isRecentBroadcast(value: string): boolean {
+  return Date.now() - new Date(value).getTime() < 7 * 24 * 60 * 60 * 1000;
 }
