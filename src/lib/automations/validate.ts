@@ -44,7 +44,7 @@ function walk(steps: StepLike[], prefix: string, issues: ValidationIssue[]): voi
   steps.forEach((s, i) => {
     const path = `${prefix}steps[${i}]`
     validateOne(s, path, issues)
-    if (s.step_type === 'condition' && s.branches) {
+    if ((s.step_type === 'condition' || s.step_type === 'ai_classification') && s.branches) {
       if (s.branches.yes) walk(s.branches.yes, `${path}.yes.`, issues)
       if (s.branches.no) walk(s.branches.no, `${path}.no.`, issues)
     }
@@ -61,8 +61,6 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       break
     case 'send_buttons':
     case 'send_list': {
-      // The whole step_config IS the interactive payload; validate it
-      // against Meta's limits (same check the engine runs before send).
       const result = validateInteractivePayload(c)
       if (!result.ok) {
         issues.push({ path: `${path}.interactive`, message: result.error })
@@ -126,6 +124,41 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
         issues.push({ path: `${path}.operand`, message: 'condition operand is required' })
       }
       break
+    case 'ai_classification':
+      if (!nonEmpty(c.instruction)) {
+        issues.push({ path: `${path}.instruction`, message: 'AI instruction is required' })
+      }
+      if (!nonEmpty(c.input_template)) {
+        issues.push({ path: `${path}.input_template`, message: 'AI input is required' })
+      }
+      if (
+        !Number.isInteger(c.context_messages) ||
+        Number(c.context_messages) < 1 ||
+        Number(c.context_messages) > 20
+      ) {
+        issues.push({
+          path: `${path}.context_messages`,
+          message: 'conversation context must be an integer from 1 to 20',
+        })
+      }
+      if (
+        typeof c.min_score !== 'number' ||
+        !Number.isFinite(c.min_score) ||
+        c.min_score < 0 ||
+        c.min_score > 100
+      ) {
+        issues.push({
+          path: `${path}.min_score`,
+          message: 'minimum score must be between 0 and 100',
+        })
+      }
+      if (c.positive_intent !== 'positive') {
+        issues.push({
+          path: `${path}.positive_intent`,
+          message: 'positive intent must be "positive"',
+        })
+      }
+      break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
         issues.push({ path: `${path}.url`, message: 'webhook URL is required' })
@@ -144,7 +177,6 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       }
       break
     case 'close_conversation':
-      // No config required.
       break
     default:
       issues.push({ path, message: `unknown step type: ${step.step_type}` })
@@ -165,12 +197,6 @@ export function validateTriggerForActivation(
     } else if (k.some((v) => typeof v !== 'string' || v.trim() === '')) {
       issues.push({ path: 'trigger.keywords', message: 'keywords cannot be empty strings' })
     }
-    // A missing match_type defaults to "contains" at runtime (see
-    // automations/engine.ts and flows/engine.ts, which both read
-    // `match_type ?? "contains"`), so only an explicit, unrecognised
-    // value is invalid here. This keeps activation validation in step
-    // with the engine and with the builder's "Contains" default — an
-    // automation that shows the default in the UI must not be rejected.
     if (
       cfg.match_type != null &&
       cfg.match_type !== 'exact' &&
