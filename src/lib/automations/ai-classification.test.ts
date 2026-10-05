@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiClassificationStepConfig } from '@/types'
 
-const loadAiConfigMock = vi.fn()
-const generateReplyMock = vi.fn()
+const { loadAiConfigMock, generateReplyMock } = vi.hoisted(() => ({
+  loadAiConfigMock: vi.fn(),
+  generateReplyMock: vi.fn(),
+}))
 
 vi.mock('@/lib/ai/config', () => ({
   loadAiConfig: loadAiConfigMock,
