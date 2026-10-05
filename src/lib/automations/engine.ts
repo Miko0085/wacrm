@@ -4,6 +4,7 @@ import type {
   AutomationStep,
   AutomationTriggerType,
   ConditionStepConfig,
+  AiClassificationStepConfig,
   KeywordMatchTriggerConfig,
   InteractiveReplyTriggerConfig,
   TagTriggerConfig,
@@ -24,6 +25,11 @@ import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import {
+  classifyAutomationMessage,
+  classificationTakesYesBranch,
+  classificationVars,
+} from './ai-classification'
 
 // ------------------------------------------------------------
 // Public API
@@ -180,23 +186,11 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     .from('automation_logs')
     .insert({
       automation_id: automation.id,
-      // Tenancy: matches automation.account_id (NOT NULL post-017).
       account_id: automation.account_id,
-      // Audit: keeps the historical "author of this automation"
-      // pointer so logs still attribute to the right user even
-      // after teammates join the account.
       user_id: automation.user_id,
       contact_id: input.contactId ?? null,
       trigger_event: input.triggerType,
       steps_executed: [],
-      // Seeded pessimistically. The row is written BEFORE any step runs,
-      // and every terminal path below overwrites it (`appendResults` at
-      // the outermost scope, or `finalizeLog`). Seeding 'success' meant a
-      // run that died mid-flight — the process frozen, the pod recycled —
-      // left a permanent `status: 'success'` with `steps_executed: []`,
-      // indistinguishable from an automation that genuinely had nothing
-      // to do. 'failed' inverts that: the status only becomes success if
-      // execution actually reached the end. See issue #409.
       status: 'failed',
     })
     .select()
@@ -218,10 +212,6 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     triggerEvent: input.triggerType,
   })
 
-  // Atomic counter update via the SQL function from migration 007.
-  // Doing this with a client-side read-modify-write raced when the
-  // same automation fired for two contacts simultaneously — both
-  // would read N and both write N+1, losing one count permanently.
   const { error: rpcErr } = await db.rpc('increment_automation_execution_count', {
     p_automation_id: automation.id,
   })
@@ -274,14 +264,11 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
   let errorMessage: string | null = null
 
   for (const step of steps as AutomationStep[]) {
-    // `wait` is the suspension point: enqueue and stop processing this
-    // scope. The cron endpoint will pick it up later.
     if (step.step_type === 'wait') {
       const cfg = step.step_config as WaitStepConfig
       const ms = waitMs(cfg)
       await db.from('automation_pending_executions').insert({
         automation_id: args.automation.id,
-        // Tenancy: account_id required NOT NULL post-017.
         account_id: args.automation.account_id,
         user_id: args.automation.user_id,
         contact_id: args.contactId,
@@ -314,8 +301,36 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
           status: 'success',
           detail: `branch=${taken ? 'yes' : 'no'}`,
         })
-        // Recurse into the chosen branch at position 0 (children use their
-        // own ordering within the branch scope).
+        await executeStepsFrom({
+          ...args,
+          parentStepId: step.id,
+          branch: taken ? 'yes' : 'no',
+          startPosition: 0,
+          logId: args.logId,
+        })
+        continue
+      }
+
+      if (step.step_type === 'ai_classification') {
+        const cfg = step.step_config as AiClassificationStepConfig
+        const result = await classifyAutomationMessage({
+          db,
+          accountId: args.automation.account_id,
+          conversationId: args.context.conversation_id,
+          messageText: String(args.context.message_text ?? ''),
+          config: cfg,
+        })
+        args.context.vars = {
+          ...(args.context.vars ?? {}),
+          ...classificationVars(result),
+        }
+        const taken = classificationTakesYesBranch(result, cfg)
+        results.push({
+          step_id: step.id,
+          step_type: 'ai_classification',
+          status: 'success',
+          detail: `intent=${result.intent} score=${result.score} qualified=${result.qualified} branch=${taken ? 'yes' : 'no'}`,
+        })
         await executeStepsFrom({
           ...args,
           parentStepId: step.id,
@@ -350,7 +365,6 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
   if (args.parentStepId === null) {
     await appendResults(args.logId, results, status, errorMessage)
   } else {
-    // Nested branch — just append results; parent scope decides final status.
     await appendResults(args.logId, results, null, errorMessage)
   }
 }
@@ -379,9 +393,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'send_list': {
       const payload = step.step_config as SendButtonsStepConfig | SendListStepConfig
       if (!args.contactId) throw new Error(`${step.step_type} needs a contact`)
-      // Validate against Meta's limits before the network call so a bad
-      // payload surfaces as a clear failed-step detail rather than a raw
-      // Meta 400 mid-conversation.
       const check = validateInteractivePayload(payload)
       if (!check.ok) throw new Error(check.error)
       const conversationId = await resolveConversationId(args)
@@ -400,10 +411,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('send_template needs a contact')
       if (!cfg.template_name) throw new Error('send_template needs template_name')
       const conversationId = await resolveConversationId(args)
-      // Meta templates use positional {{1}}, {{2}}, … placeholders, so
-      // we MUST emit params in strict numeric order. Lexicographic sort
-      // of "1", "2", …, "10" yields "1", "10", "2", … which silently
-      // scrambles every template with ≥10 variables.
       const params = cfg.variables
         ? Object.keys(cfg.variables)
             .sort((a, b) => {
@@ -468,8 +475,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     }
 
     case 'remove_tag': {
-      // See add_tag: tenant scoping relies on the runAutomationsForTrigger
-      // ownership guard, since contact_tags carries no account_id.
       const cfg = step.step_config as TagStepConfig
       if (!args.contactId || !cfg.tag_id) throw new Error('remove_tag needs contact + tag_id')
       await db
@@ -485,9 +490,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('assign_conversation needs a contact')
       let agentId = cfg.agent_id
       if (cfg.mode === 'round_robin') {
-        // Pick any member of the account. The existing implementation
-        // only ever returned the automation's author; preserving that
-        // shape until a real round-robin algorithm replaces it.
         const { data: profiles } = await db
           .from('profiles')
           .select('user_id')
@@ -507,31 +509,18 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'update_contact_field': {
       const cfg = step.step_config as UpdateContactFieldStepConfig
       if (!args.contactId) throw new Error('update_contact_field needs a contact')
-      // Resolve workflow variables ({{ vars.* }}, {{ message.text }}) so custom
-      // values can be populated dynamically from the triggering context.
       const value = interpolate(cfg.value, args)
 
-      // Custom fields are encoded as `custom:<custom_field_id>`; anything else
-      // is a built-in contact column.
       if (cfg.field.startsWith('custom:')) {
         const customFieldId = cfg.field.slice('custom:'.length)
-        if (!customFieldId) {
-          return `field ${cfg.field} not writable from automations`
-        }
-        // Defense in depth: the service-role client bypasses RLS, so confirm
-        // the field definition belongs to this account before writing.
+        if (!customFieldId) return `field ${cfg.field} not writable from automations`
         const { data: field } = await db
           .from('custom_fields')
           .select('id')
           .eq('id', customFieldId)
           .eq('account_id', args.automation.account_id)
           .maybeSingle()
-        if (!field) {
-          return `field ${cfg.field} not writable from automations`
-        }
-        // Upsert on the table's UNIQUE(contact_id, custom_field_id) so repeated
-        // runs overwrite rather than duplicate. Tenancy is enforced above and,
-        // for the contact side, by the entry-point ownership guard.
+        if (!field) return `field ${cfg.field} not writable from automations`
         await db
           .from('contact_custom_values')
           .upsert(
@@ -542,17 +531,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       }
 
       const allowed = new Set(['name', 'email', 'company', 'wa_marketing_status'])
-      if (!allowed.has(cfg.field)) {
-        return `field ${cfg.field} not writable from automations`
-      }
-      // wa_marketing_status also stamps its own timestamp column — this is
-      // what lets a "STOP"/"UNSUBSCRIBE" keyword automation (trigger:
-      // keyword_match → action: update_contact_field) suppress future
-      // broadcasts the exact same way a provider's native opt-out webhook
-      // event does (see src/lib/whatsapp/providers/gupshup-webhook.ts'
-      // applyUserEvent). The DB CHECK constraint (migration 040) rejects
-      // any value that isn't OPTED_IN/OPTED_OUT/UNKNOWN, so a typo'd
-      // automation config fails loudly rather than corrupting consent state.
+      if (!allowed.has(cfg.field)) return `field ${cfg.field} not writable from automations`
       const extra: Record<string, unknown> =
         cfg.field === 'wa_marketing_status'
           ? value === 'OPTED_OUT'
@@ -561,9 +540,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
               ? { wa_opt_in_at: new Date().toISOString(), wa_consent_source: 'automation_keyword' }
               : {}
           : {}
-      // Defense in depth: scope the service-role write to the account so
-      // a future caller that skips the entry-point ownership guard still
-      // cannot write across tenants.
       await db
         .from('contacts')
         .update({ [cfg.field]: value, updated_at: new Date().toISOString(), ...extra })
@@ -575,18 +551,12 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'create_deal': {
       const cfg = step.step_config as CreateDealStepConfig
       if (!cfg.pipeline_id || !cfg.stage_id) throw new Error('create_deal needs pipeline + stage')
-      // Match the account's configured default currency rather than
-      // the static `deals.currency` DB default — keeps automation-
-      // created deals consistent with the one-currency-per-account
-      // rule (issue #218). Fall back to USD if the row is somehow
-      // missing the value (pre-021 forks).
       const { data: acct } = await db
         .from('accounts')
         .select('default_currency')
         .eq('id', args.automation.account_id)
         .maybeSingle()
       await db.from('deals').insert({
-        // Tenancy + audit, same split as automation_logs above.
         account_id: args.automation.account_id,
         user_id: args.automation.user_id,
         pipeline_id: cfg.pipeline_id,
@@ -603,10 +573,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'send_webhook': {
       const cfg = step.step_config as SendWebhookStepConfig
       if (!cfg.url) throw new Error('send_webhook needs url')
-      // SSRF guard: the URL and headers are account-controlled and the
-      // server makes the request, so refuse any destination that resolves
-      // to a private / loopback / link-local / reserved address. Mirrors
-      // the webhook_endpoints delivery path (see lib/webhooks/deliver.ts).
       if (!(await isDeliverableUrl(cfg.url))) {
         throw new Error('send_webhook: destination not allowed')
       }
@@ -615,9 +581,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(cfg.headers ?? {}) },
         body,
-        // Do NOT follow redirects — a public URL could 3xx-bounce to an
-        // internal address, defeating the guard above. Bound the request
-        // so a hung/slow internal host can't tie up the runner.
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
       })
@@ -644,13 +607,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 // Helpers
 // ------------------------------------------------------------
 
-/**
- * Pick the conversation a send-type step should use. Prefer the id the
- * webhook handed us (it's the one that just got the inbound message);
- * fall back to the contact's conversation for resumed/wait paths and
- * manual engine POSTs. Throws if none exists — send steps have
- * no meaningful target without a conversation.
- */
 async function resolveConversationId(args: ExecuteArgs): Promise<string> {
   const fromCtx = args.context.conversation_id
   if (fromCtx) return fromCtx
@@ -671,37 +627,14 @@ async function resolveConversationId(args: ExecuteArgs): Promise<string> {
   return data.id as string
 }
 
-/** Letter, digit or underscore in any script — the "inside a word" test. */
 const WORD_CHAR = '[\\p{L}\\p{N}_]'
 
-/**
- * Whole-word keyword test, behind `match_type: 'word'` (issue #409 — a
- * one-letter keyword under `contains` fires on every message containing
- * that letter, e.g. "k" on "thanks").
- *
- * Deliberately NOT `\b`, which is defined against `[A-Za-z0-9_]` and so
- * breaks two cases that matter for WhatsApp traffic:
- *
- *   - A keyword carrying punctuation: `/\bhi!\b/` demands a word character
- *     after the "!", so it never matches "say hi!".
- *   - Any non-Latin script: every character of "안녕" is a non-word
- *     character to `\b`, so `/\b안녕\b/` matches nothing at all.
- *
- * Unicode-aware lookarounds handle both. Note this really is word-based:
- * it won't find "안녕" inside "안녕하세요", because a language that doesn't
- * delimit words with spaces has no word edge there. That's what `contains`
- * is for, and it stays the default.
- *
- * Exported for direct unit testing of the escaping / boundary edges.
- */
 export function matchesWholeWord(
   text: string,
   keyword: string,
   caseSensitive = false,
 ): boolean {
   if (!keyword) return false
-  // The keyword is account-supplied free text, so metacharacters have to
-  // be literal — otherwise "(" is an unterminated group and RegExp throws.
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const pattern = new RegExp(
     `(?<!${WORD_CHAR})${escaped}(?!${WORD_CHAR})`,
@@ -728,9 +661,6 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
     })
   }
 
-  // Match on the tapped button / list-row id (exact). Lets multi-step
-  // menus be chained: automation A sends buttons, automation B fires on
-  // the reply id and sends the next step.
   if (automation.trigger_type === 'interactive_reply') {
     const cfg = automation.trigger_config as InteractiveReplyTriggerConfig
     const replyId = ctx?.interactive_reply_id
@@ -754,9 +684,6 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
   switch (cfg.subject) {
     case 'tag_presence': {
       if (!args.contactId || !cfg.operand) return false
-      // contact_tags has no account_id column (its RLS keys off the parent
-      // contact), so tenant scoping here relies on the contact-ownership
-      // guard in runAutomationsForTrigger.
       const { count } = await db
         .from('contact_tags')
         .select('id', { count: 'exact', head: true })
@@ -766,8 +693,6 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
     }
     case 'contact_field': {
       if (!args.contactId || !cfg.operand) return false
-      // Scope to the account so the condition can't be turned into a
-      // cross-tenant read oracle via the service-role client.
       const { data } = await db
         .from('contacts')
         .select(cfg.operand)
@@ -782,8 +707,6 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
       return text.toLowerCase().includes((cfg.value ?? '').toLowerCase())
     }
     case 'time_of_day': {
-      // operand form "HH:mm-HH:mm" — true if now is within that window
-      // (supports over-midnight ranges like "18:00-09:00").
       const [from, to] = (cfg.operand ?? '').split('-')
       if (!from || !to) return false
       const now = new Date()
@@ -833,10 +756,7 @@ async function appendResults(
     ...newItems,
   ]
   const update: Record<string, unknown> = { steps_executed: merged }
-  // Only overwrite status on the outermost scope — nested branches pass null.
-  if (status !== null) {
-    update.status = status
-  }
+  if (status !== null) update.status = status
   if (errorMessage) update.error_message = errorMessage
   await db.from('automation_logs').update(update).eq('id', logId)
 }
