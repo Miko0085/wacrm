@@ -149,9 +149,9 @@ export function parseAiClassificationResult(raw: string): AiClassificationResult
     intent: value.intent as AiClassificationIntent,
     score: value.score,
     qualified: value.qualified,
-    language: value.language,
-    summary: value.summary,
-    reason: value.reason,
+    language: value.language as string,
+    summary: value.summary as string,
+    reason: value.reason as string,
   }
 }
 
