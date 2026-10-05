@@ -2,10 +2,10 @@ import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
 // Builder payload → flat rows for automation_steps.
-// Root steps arrive in order. A Condition step carries its children
-// under `branches: { yes: [...], no: [...] }`. We walk the tree and
-// assign stable UUIDs so parent_step_id references resolve in a
-// single INSERT.
+// Root steps arrive in order. Branching steps (`condition` and
+// `ai_classification`) carry children under
+// `branches: { yes: [...], no: [...] }`. We walk the tree and assign
+// stable UUIDs so parent_step_id references resolve in a single INSERT.
 // ------------------------------------------------------------
 
 export interface BuilderStepInput {
@@ -32,6 +32,10 @@ const uid = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2) + Date.now().toString(36)
+
+function isBranchingStep(stepType: string): boolean {
+  return stepType === 'condition' || stepType === 'ai_classification'
+}
 
 export async function replaceSteps(
   automationId: string,
@@ -74,7 +78,7 @@ export async function insertSteps(
         step_config: s.step_config ?? {},
         position: idx,
       })
-      if (s.step_type === 'condition' && s.branches) {
+      if (isBranchingStep(s.step_type) && s.branches) {
         if (s.branches.yes) walk(s.branches.yes, id, 'yes')
         if (s.branches.no) walk(s.branches.no, id, 'no')
       }
