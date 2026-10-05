@@ -60,6 +60,23 @@ export interface GupshupUsageSummary {
   }>
 }
 
+type GupshupUsageTotalsAccumulator = {
+  totalFees: number
+  waFees: number
+  gsFees: number
+  outgoingMsg: number
+  incomingMsg: number
+  totalMsg: number
+  marketing: number
+  mmLiteMarketing: number
+  utility: number
+  authentication: number
+  internationalAuthentication: number
+  service: number
+  ftc: number
+  fep: number
+}
+
 function n(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
@@ -69,7 +86,7 @@ export function aggregateGupshupUsage(rows: GupshupUsageRow[]): GupshupUsageSumm
     .filter((row) => typeof row.date === 'string' && row.date.length > 0)
     .sort((a, b) => String(a.date).localeCompare(String(b.date)))
 
-  const totals = ordered.reduce(
+  const totals = ordered.reduce<GupshupUsageTotalsAccumulator>(
     (acc, row) => {
       acc.totalFees += n(row.totalFees)
       acc.waFees += n(row.waFees)
