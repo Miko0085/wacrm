@@ -874,6 +874,7 @@
         "condition": "Condition (If/Else)",
         "emit_business_event": "Emit Business Event",
           "send_telegram": "Send Telegram Notification",
+          "start_flow": "Start Flow",
           "send_webhook": "Send Webhook",
         "close_conversation": "Close Conversation"
       },
@@ -909,6 +910,10 @@
         "time_based": {
           "label": "Time-Based",
           "hint": "On a recurring schedule"
+        },
+        "business_event": {
+          "label": "Business Event",
+          "hint": "When a WACRM business event is emitted"
         }
       },
       "trigger": "Trigger",
