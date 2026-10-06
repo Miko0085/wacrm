@@ -42,6 +42,8 @@ import {
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
+import { recordBusinessEvent } from "@/lib/business-events/record";
+import { runAutomationsForTrigger } from "@/lib/automations/engine";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
@@ -481,9 +483,43 @@ async function executeHandoff(
       .update(convUpdate)
       .eq("id", run.conversation_id);
   }
+  const eventPayload = {
+    reason: cfg.note ?? "flow_handoff",
+    summary: cfg.note ?? null,
+    flow_id: run.flow_id,
+    flow_run_id: run.id,
+    node_key: node.node_key,
+    assigned_to: cfg.assign_to ?? null,
+    vars: run.vars,
+  };
+
+  const event = await recordBusinessEvent(db, {
+    accountId: run.account_id,
+    userId: run.user_id,
+    contactId: run.contact_id,
+    conversationId: run.conversation_id,
+    eventType: "human_handoff_requested",
+    source: "flow",
+    payload: eventPayload,
+  });
+
+  await runAutomationsForTrigger({
+    accountId: run.account_id,
+    triggerType: "business_event",
+    contactId: run.contact_id,
+    context: {
+      conversation_id: run.conversation_id ?? undefined,
+      business_event_id: event.id,
+      business_event_type: "human_handoff_requested",
+      business_event_payload: eventPayload,
+      vars: run.vars,
+    },
+  });
+
   await logEvent(db, run.id, "handoff", node.node_key, {
     note: cfg.note ?? null,
     assigned_to: cfg.assign_to ?? null,
+    business_event_id: event.id,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
 }
