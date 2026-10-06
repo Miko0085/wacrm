@@ -1177,7 +1177,11 @@
         "filenamePlaceholder": "invoice.pdf",
         "advanceAfterSending": "After sending, advance to",
         "pickNextNode": "Pick a next node…",
-        "none": "— None —"
+        "none": "— None —",
+        "aiInstruction": "AI Decision instruction (optional)",
+        "aiInputVar": "Input variable",
+        "aiContextMessages": "Conversation context messages",
+        "aiDecisionHelp": "Decision only: no customer reply is sent. Results are stored as ai_primary_intent, ai_requires_human, ai_confidence, ai_extracted_* and other ai_* vars."
       },
       "categories": {
         "messaging": "Messaging",
@@ -1224,6 +1228,10 @@
         "end": {
           "label": "End",
           "blurb": "Ends the flow"
+        },
+        "ai_decision": {
+          "label": "AI Decision",
+          "blurb": "Classifies the latest reply and stores structured ai_* variables"
         }
       }
     },
