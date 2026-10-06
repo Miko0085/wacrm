@@ -9,6 +9,8 @@ import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { recordBusinessEvent } from '@/lib/business-events/record'
+import { runAutomationsForTrigger } from '@/lib/automations/engine'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -154,6 +156,32 @@ export async function dispatchInboundToAiReply(
         update.assigned_agent_id = config.handoffAgentId
       }
       await db.from('conversations').update(update).eq('id', conversationId)
+
+      const payload = {
+        reason: 'ai_handoff',
+        summary,
+        assigned_agent_id: config.handoffAgentId ?? null,
+      }
+      const event = await recordBusinessEvent(db, {
+        accountId,
+        userId: configOwnerUserId,
+        contactId,
+        conversationId,
+        eventType: 'human_handoff_requested',
+        source: 'ai_auto_reply',
+        payload,
+      })
+      await runAutomationsForTrigger({
+        accountId,
+        triggerType: 'business_event',
+        contactId,
+        context: {
+          conversation_id: conversationId,
+          business_event_id: event.id,
+          business_event_type: 'human_handoff_requested',
+          business_event_payload: payload,
+        },
+      })
       return
     }
 
