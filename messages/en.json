@@ -872,7 +872,8 @@
         "create_deal": "Create Deal",
         "wait": "Wait",
         "condition": "Condition (If/Else)",
-        "send_webhook": "Send Webhook",
+        "emit_business_event": "Emit Business Event",
+          "send_webhook": "Send Webhook",
         "close_conversation": "Close Conversation"
       },
       "triggers": {
