@@ -10,6 +10,7 @@ import {
   planBroadcastResume,
   releaseBroadcastDelivery,
 } from '@/lib/whatsapp/broadcast-resume'
+import { drainInboundDebounceJobs } from '@/lib/whatsapp/inbound-debounce'
 import {
   deliverBroadcast,
   finalizeBroadcastStatus,
@@ -89,6 +90,14 @@ export async function GET(request: Request) {
     processed++
   }
 
+  const debounceResult = await drainInboundDebounceJobs(admin, 50).catch((error) => {
+    console.error(
+      '[inbound-debounce] cron drain failed:',
+      error instanceof Error ? error.message : error,
+    )
+    return { processed: 0, failed: 1 }
+  })
+
   const { data: dueBroadcasts, error: broadcastError } = await admin
     .from('broadcasts')
     .select('id, account_id, scheduled_at')
@@ -99,7 +108,12 @@ export async function GET(request: Request) {
 
   if (broadcastError) {
     return NextResponse.json(
-      { error: broadcastError.message, processed },
+      {
+        error: broadcastError.message,
+        processed,
+        debounced_inbound: debounceResult.processed,
+        debounce_failed: debounceResult.failed,
+      },
       { status: 500 },
     )
   }
@@ -163,6 +177,8 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     processed,
+    debounced_inbound: debounceResult.processed,
+    debounce_failed: debounceResult.failed,
     scheduled_broadcasts: scheduledBroadcasts,
   })
 }
