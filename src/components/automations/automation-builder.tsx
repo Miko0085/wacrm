@@ -113,6 +113,10 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   wait: { label: "wait", icon: Hourglass, border: "border-l-border" },
   condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
   ai_classification: { label: "ai_classification", icon: Zap, border: "border-l-violet-500" },
+  emit_business_event: { label: "emit_business_event", icon: Webhook, border: "border-l-cyan-500" },
+  human_handoff: { label: "human_handoff", icon: UserCheck, border: "border-l-orange-500" },
+  send_telegram: { label: "send_telegram", icon: MessageSquare, border: "border-l-sky-500" },
+  start_flow: { label: "start_flow", icon: Zap, border: "border-l-emerald-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
 }
@@ -131,6 +135,10 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "wait",
   "condition",
   "ai_classification",
+  "emit_business_event",
+  "human_handoff",
+  "send_telegram",
+  "start_flow",
   "send_webhook",
   "close_conversation",
 ]
@@ -144,6 +152,7 @@ const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
   { value: "conversation_assigned" },
   { value: "tag_added" },
   { value: "time_based" },
+  { value: "business_event" },
 ]
 
 function isBranchingType(type: AutomationStepType | string): boolean {
@@ -208,6 +217,14 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
         positive_intent: "positive",
         min_score: 60,
       }
+    case "emit_business_event":
+      return { event_type: "human_handoff_requested", payload_template: "{}" }
+    case "human_handoff":
+      return { reason: "{{vars.ai_reason}}", summary: "{{vars.ai_summary}}", pause_ai: true, event_type: "human_handoff_requested" }
+    case "send_telegram":
+      return { connection_id: "", chat_id: "", text: "🚨 {{vars.ai_summary}}" }
+    case "start_flow":
+      return { flow_id: "", initial_vars: {} }
     case "send_webhook":
       return { url: "", headers: {}, body_template: "" }
     case "close_conversation":
