@@ -897,6 +897,56 @@ async function advanceCurrentNodeKey(
 }
 
 // ============================================================
+// Programmatic entry point — used by Automations to start a manual flow.
+// ============================================================
+
+export async function startFlowForContact(args: {
+  accountId: string;
+  flowId: string;
+  contactId: string;
+  conversationId: string;
+}): Promise<DispatchInboundResult> {
+  const db = supabaseAdmin();
+  const { data: flowData, error } = await db
+    .from("flows")
+    .select("*")
+    .eq("id", args.flowId)
+    .eq("account_id", args.accountId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!flowData) throw new Error("Flow not found in this account");
+
+  const flow = flowData as FlowRow;
+  if (!flow.entry_node_id) throw new Error("Flow has no entry node");
+  if (flow.status === "archived") throw new Error("Archived flow cannot be started");
+
+  const existing = await loadActiveRunForContact(db, args.accountId, args.contactId);
+  if (existing) {
+    return {
+      consumed: true,
+      flow_run_id: existing.id,
+      outcome: "duplicate_inbound_ignored",
+    };
+  }
+
+  const nodes = await loadAllNodes(db, flow.id);
+  const syntheticInput: DispatchInboundInput = {
+    accountId: args.accountId,
+    userId: flow.user_id,
+    contactId: args.contactId,
+    conversationId: args.conversationId,
+    message: {
+      kind: "text",
+      text: "",
+      meta_message_id: `automation:${crypto.randomUUID()}`,
+    },
+  };
+
+  return startNewRun(db, flow, syntheticInput, nodes);
+}
+
+// ============================================================
 // Public entry point — the webhook calls this on every inbound.
 // ============================================================
 
