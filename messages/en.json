@@ -873,6 +873,7 @@
         "wait": "Wait",
         "condition": "Condition (If/Else)",
         "emit_business_event": "Emit Business Event",
+          "send_telegram": "Send Telegram Notification",
           "send_webhook": "Send Webhook",
         "close_conversation": "Close Conversation"
       },
@@ -1557,6 +1558,7 @@
       "deals": "Deals & currency",
       "members": "Team members",
       "api": "API keys",
+        "telegram": "Telegram",
       "sub-accounts": "Sub-accounts"
     },
     "groups": {
