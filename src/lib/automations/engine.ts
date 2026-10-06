@@ -732,6 +732,10 @@ function interpolate(s: string, args: ExecuteArgs): string {
     if (ns === 'contact' && prop === 'id') return String(args.contactId ?? '')
     if (ns === 'conversation' && prop === 'id') return String(args.context.conversation_id ?? '')
     if (ns === 'vars' && prop) return String(args.context.vars?.[prop] ?? '')
+    if (ns === 'event' && prop === 'id') return String(args.context.business_event_id ?? '')
+    if (ns === 'event' && prop === 'type') return String(args.context.business_event_type ?? '')
+    if (ns === 'event' && prop === 'payload') return JSON.stringify(args.context.business_event_payload ?? {})
+    if (ns === 'event' && prop) return String(args.context.business_event_payload?.[prop] ?? '')
     return ''
   })
 }
