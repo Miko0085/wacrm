@@ -20,6 +20,7 @@ import {
   Flag,
   GitFork,
   Inbox,
+  BrainCircuit,
   ListChecks,
   ListPlus,
   MessageCircle,
@@ -49,6 +50,7 @@ export type NodeType =
   | 'collect_input'
   | 'condition'
   | 'set_tag'
+  | 'ai_decision'
   | 'handoff'
   | 'end';
 
@@ -152,6 +154,13 @@ export const NODE_META: Record<
     blurb: 'Adds or removes a contact tag',
     category: 'logic',
   },
+  ai_decision: {
+    label: 'AI Decision',
+    icon: BrainCircuit,
+    color: 'text-violet-400',
+    blurb: 'Classifies the latest reply and stores structured ai_* vars',
+    category: 'logic',
+  },
   handoff: {
     label: 'Handoff to agent',
     icon: UserPlus,
@@ -205,6 +214,7 @@ const NODE_HUE: Record<NodeType, { l: number; c: number; h: number }> = {
   collect_input: { l: 0.65, c: 0.1, h: 185 }, // teal — capture
   condition: { l: 0.72, c: 0.15, h: 65 }, // amber — a fork in the road
   set_tag: { l: 0.65, c: 0.15, h: 350 }, // pink
+  ai_decision: { l: 0.62, c: 0.18, h: 300 }, // violet — reasoning
   handoff: { l: 0.65, c: 0.17, h: 16 }, // rose — hands off
   end: { l: 0.55, c: 0.01, h: 260 }, // neutral grey — terminal
 };
@@ -409,6 +419,12 @@ export function summarizeNode(
           ? ` "${truncate(value, 20)}"`
           : '';
       return subject === 'tag' ? subjectStr : `${subjectStr} ${op}${valStr}`;
+    }
+    case 'ai_decision': {
+      const inputVar = typeof cfg.input_var === 'string' && cfg.input_var
+        ? cfg.input_var
+        : '_last_inbound_text';
+      return `Classify vars.${inputVar} → ai_*`;
     }
     case 'set_tag': {
       const mode = cfg.mode === 'remove' ? (t ? t('modeRemove') : 'Remove') : (t ? t('modeAdd') : 'Add');
