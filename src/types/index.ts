@@ -431,6 +431,7 @@ export type AutomationStepType =
   | 'ai_classification'
   | 'emit_business_event'
   | 'send_telegram'
+  | 'start_flow'
   | 'send_webhook'
   | 'close_conversation';
 
@@ -548,6 +549,10 @@ export interface SendTelegramStepConfig {
   parse_mode?: 'HTML' | 'Markdown' | 'MarkdownV2';
 }
 
+export interface StartFlowStepConfig {
+  flow_id: string;
+}
+
 export interface SendWebhookStepConfig {
   url: string;
   headers?: Record<string, string>;
@@ -569,6 +574,7 @@ export type AutomationStepConfig =
   | AiClassificationStepConfig
   | EmitBusinessEventStepConfig
   | SendTelegramStepConfig
+  | StartFlowStepConfig
   | SendWebhookStepConfig
   | Record<string, never>
   | Record<string, unknown>;
