@@ -26,6 +26,7 @@ import {
   Hourglass,
   GitBranch,
   Webhook,
+  RadioTower,
   CircleSlash,
   Zap,
   Loader2,
@@ -113,6 +114,7 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   wait: { label: "wait", icon: Hourglass, border: "border-l-border" },
   condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
   ai_classification: { label: "ai_classification", icon: Zap, border: "border-l-violet-500" },
+  emit_business_event: { label: "emit_business_event", icon: RadioTower, border: "border-l-cyan-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
 }
@@ -131,6 +133,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "wait",
   "condition",
   "ai_classification",
+  "emit_business_event",
   "send_webhook",
   "close_conversation",
 ]
@@ -144,6 +147,7 @@ const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
   { value: "conversation_assigned" },
   { value: "tag_added" },
   { value: "time_based" },
+  { value: "business_event" },
 ]
 
 function isBranchingType(type: AutomationStepType | string): boolean {
@@ -208,6 +212,8 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
         positive_intent: "positive",
         min_score: 60,
       }
+    case "emit_business_event":
+      return { event_type: "human_handoff_requested", source: "automation", payload_template: "{}" }
     case "send_webhook":
       return { url: "", headers: {}, body_template: "" }
     case "close_conversation":
@@ -1385,6 +1391,34 @@ function StepEditor({
       )
     case "ai_classification":
       return <AiClassificationFields config={cfg} onChange={set} />
+    case "emit_business_event":
+      return (
+        <>
+          <FieldBlock label="Event type">
+            <Input
+              value={(cfg.event_type as string) ?? ""}
+              onChange={(e) => set({ event_type: e.target.value })}
+              placeholder="human_handoff_requested"
+              className="bg-muted font-mono text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Source">
+            <Input
+              value={(cfg.source as string) ?? "automation"}
+              onChange={(e) => set({ source: e.target.value })}
+              className="bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Payload JSON">
+            <Textarea
+              value={(cfg.payload_template as string) ?? "{}"}
+              onChange={(e) => set({ payload_template: e.target.value })}
+              placeholder={'{"reason":"{{vars.ai_reason}}","summary":"{{vars.ai_summary}}"}'}
+              className="min-h-24 bg-muted font-mono text-xs text-foreground"
+            />
+          </FieldBlock>
+        </>
+      )
     case "send_webhook":
       return (
         <>
