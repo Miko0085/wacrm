@@ -864,6 +864,7 @@
         "send_buttons": "Send Buttons",
         "send_list": "Send List",
         "send_template": "Send Template",
+        "send_media": "Send Media",
         "add_tag": "Add Tag",
         "remove_tag": "Remove Tag",
         "assign_conversation": "Assign Conversation",
