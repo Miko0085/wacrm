@@ -431,6 +431,8 @@ export type AutomationStepType =
   | 'ai_classification'
   | 'emit_business_event'
   | 'human_handoff'
+  | 'send_telegram'
+  | 'start_flow'
   | 'send_webhook'
   | 'close_conversation';
 
@@ -548,6 +550,18 @@ export interface HumanHandoffStepConfig {
   event_type?: string;
 }
 
+export interface SendTelegramStepConfig {
+  connection_id: string;
+  chat_id?: string;
+  text: string;
+  parse_mode?: 'HTML' | 'MarkdownV2';
+}
+
+export interface StartFlowStepConfig {
+  flow_id: string;
+  initial_vars?: Record<string, string>;
+}
+
 export interface SendWebhookStepConfig {
   url: string;
   headers?: Record<string, string>;
@@ -569,6 +583,8 @@ export type AutomationStepConfig =
   | AiClassificationStepConfig
   | EmitBusinessEventStepConfig
   | HumanHandoffStepConfig
+  | SendTelegramStepConfig
+  | StartFlowStepConfig
   | SendWebhookStepConfig
   | Record<string, never>
   | Record<string, unknown>;
