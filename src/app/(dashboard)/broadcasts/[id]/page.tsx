@@ -284,17 +284,9 @@ export default function BroadcastDetailPage() {
   async function handleCancelSchedule() {
     const supabase = createClient();
 
-    const { error: recipientsError } = await supabase
-      .from('broadcast_recipients')
-      .delete()
-      .eq('broadcast_id', broadcastId);
-
-    if (recipientsError) {
-      toast.error(`Failed to cancel schedule: ${recipientsError.message}`);
-      return;
-    }
-
-    const { error: broadcastError } = await supabase
+    // Claim the cancellation by changing only a still-scheduled row.
+    // If cron already moved it to sending, do not touch recipient rows.
+    const { data: cancelled, error: broadcastError } = await supabase
       .from('broadcasts')
       .update({
         status: 'draft',
@@ -308,10 +300,29 @@ export default function BroadcastDetailPage() {
       })
       .eq('id', broadcastId)
       .eq('account_id', accountId!)
-      .eq('status', 'scheduled');
+      .eq('status', 'scheduled')
+      .select('id')
+      .maybeSingle();
 
     if (broadcastError) {
       toast.error(`Failed to cancel schedule: ${broadcastError.message}`);
+      return;
+    }
+    if (!cancelled) {
+      toast.error('This broadcast has already started and can no longer be cancelled.');
+      await fetchData();
+      return;
+    }
+
+    const { error: recipientsError } = await supabase
+      .from('broadcast_recipients')
+      .delete()
+      .eq('broadcast_id', broadcastId);
+
+    if (recipientsError) {
+      toast.error(
+        `Schedule cancelled, but the recipient snapshot could not be cleared: ${recipientsError.message}`,
+      );
       return;
     }
 
