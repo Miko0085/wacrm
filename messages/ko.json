@@ -874,6 +874,7 @@
         "condition": "조건 (If/Else)",
         "emit_business_event": "비즈니스 이벤트 발생",
           "send_telegram": "Telegram 알림 보내기",
+          "start_flow": "플로우 시작",
           "send_webhook": "웹훅 보내기",
         "close_conversation": "대화 닫기"
       },
@@ -909,6 +910,10 @@
         "time_based": {
           "label": "시간 기반",
           "hint": "반복 일정에 따라"
+        },
+        "business_event": {
+          "label": "비즈니스 이벤트",
+          "hint": "WACRM 비즈니스 이벤트가 발생할 때"
         }
       },
       "trigger": "트리거",
