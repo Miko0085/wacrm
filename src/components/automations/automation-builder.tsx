@@ -27,6 +27,7 @@ import {
   GitBranch,
   Webhook,
   RadioTower,
+  Send,
   CircleSlash,
   Zap,
   Loader2,
@@ -115,6 +116,7 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
   ai_classification: { label: "ai_classification", icon: Zap, border: "border-l-violet-500" },
   emit_business_event: { label: "emit_business_event", icon: RadioTower, border: "border-l-cyan-500" },
+  send_telegram: { label: "send_telegram", icon: Send, border: "border-l-sky-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
 }
@@ -134,6 +136,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "condition",
   "ai_classification",
   "emit_business_event",
+  "send_telegram",
   "send_webhook",
   "close_conversation",
 ]
@@ -214,6 +217,8 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       }
     case "emit_business_event":
       return { event_type: "human_handoff_requested", source: "automation", payload_template: "{}" }
+    case "send_telegram":
+      return { connection_id: "", chat_id: "", message: "", parse_mode: "HTML" }
     case "send_webhook":
       return { url: "", headers: {}, body_template: "" }
     case "close_conversation":
@@ -1416,6 +1421,46 @@ function StepEditor({
               placeholder={'{"reason":"{{vars.ai_reason}}","summary":"{{vars.ai_summary}}"}'}
               className="min-h-24 bg-muted font-mono text-xs text-foreground"
             />
+          </FieldBlock>
+        </>
+      )
+    case "send_telegram":
+      return (
+        <>
+          <FieldBlock label="Telegram connection ID">
+            <Input
+              value={(cfg.connection_id as string) ?? ""}
+              onChange={(e) => set({ connection_id: e.target.value })}
+              placeholder="Connection UUID from Settings → Telegram"
+              className="bg-muted font-mono text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Chat ID override">
+            <Input
+              value={(cfg.chat_id as string) ?? ""}
+              onChange={(e) => set({ chat_id: e.target.value })}
+              placeholder="Leave blank to use the connection default"
+              className="bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Message">
+            <Textarea
+              value={(cfg.message as string) ?? ""}
+              onChange={(e) => set({ message: e.target.value })}
+              placeholder={"🚨 Human handoff\n{{vars.ai_summary}}"}
+              className="min-h-24 bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Parse mode">
+            <select
+              value={(cfg.parse_mode as string) ?? "HTML"}
+              onChange={(e) => set({ parse_mode: e.target.value })}
+              className={SELECT_CLASS}
+            >
+              <option value="HTML">HTML</option>
+              <option value="Markdown">Markdown</option>
+              <option value="MarkdownV2">MarkdownV2</option>
+            </select>
           </FieldBlock>
         </>
       )
