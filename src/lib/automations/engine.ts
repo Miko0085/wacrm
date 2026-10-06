@@ -9,6 +9,7 @@ import type {
   InteractiveReplyTriggerConfig,
   BusinessEventTriggerConfig,
   EmitBusinessEventStepConfig,
+  SendTelegramStepConfig,
   TagTriggerConfig,
   SendMessageStepConfig,
   SendButtonsStepConfig,
@@ -30,6 +31,7 @@ import { engineSendMedia } from '@/lib/flows/meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { recordBusinessEvent } from '@/lib/business-events/record'
+import { sendTelegramNotification } from '@/lib/telegram/send'
 import {
   classifyAutomationMessage,
   classificationTakesYesBranch,
@@ -552,6 +554,21 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
 
       return `business event ${eventType} emitted (${recorded.id})`
+    }
+    case 'send_telegram': {
+      const cfg = step.step_config as SendTelegramStepConfig
+      if (!cfg.connection_id) throw new Error('send_telegram needs connection_id')
+      const message = interpolate(cfg.message ?? '', args)
+      if (!message.trim()) throw new Error('send_telegram has empty message')
+      const messageId = await sendTelegramNotification({
+        db,
+        accountId: args.automation.account_id,
+        connectionId: cfg.connection_id,
+        chatId: cfg.chat_id ? interpolate(cfg.chat_id, args) : undefined,
+        text: message,
+        parseMode: cfg.parse_mode,
+      })
+      return `Telegram message sent (${messageId})`
     }
     case 'send_webhook': {
       const cfg = step.step_config as SendWebhookStepConfig
