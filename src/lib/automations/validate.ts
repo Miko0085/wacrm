@@ -272,6 +272,21 @@ export function validateTriggerForActivation(
     if (!nonEmpty(cfg.tag_id)) {
       issues.push({ path: 'trigger.tag_id', message: 'tag is required' })
     }
+  } else if (triggerType === 'business_event') {
+    const eventTypes = cfg.event_types
+    if (!Array.isArray(eventTypes) || eventTypes.length === 0) {
+      issues.push({
+        path: 'trigger.event_types',
+        message: 'at least one business event type is required',
+      })
+    } else if (
+      eventTypes.some((v) => typeof v !== 'string' || v.trim() === '')
+    ) {
+      issues.push({
+        path: 'trigger.event_types',
+        message: 'business event types cannot be empty strings',
+      })
+    }
   } else if (triggerType === 'interactive_reply') {
     const ids = cfg.reply_ids
     if (!Array.isArray(ids) || ids.length === 0) {
