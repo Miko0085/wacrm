@@ -477,10 +477,13 @@ async function executeHandoff(
   node: FlowNodeRow,
 ): Promise<void> {
   const cfg = node.config as { assign_to?: string; note?: string };
+  const renderedNote = cfg.note
+    ? interpolateVars(cfg.note, run.vars)
+    : "Flow requested human handoff";
   const convUpdate: Record<string, unknown> = {
     status: "pending",
     ai_autoreply_disabled: true,
-    ai_handoff_summary: cfg.note ?? "Flow requested human handoff",
+    ai_handoff_summary: renderedNote,
     updated_at: new Date().toISOString(),
   };
   if (cfg.assign_to) convUpdate.assigned_agent_id = cfg.assign_to;
@@ -491,8 +494,8 @@ async function executeHandoff(
       .eq("id", run.conversation_id);
   }
   const eventPayload = {
-    reason: cfg.note ?? "flow_handoff",
-    summary: cfg.note ?? null,
+    reason: renderedNote || "flow_handoff",
+    summary: renderedNote || null,
     flow_id: run.flow_id,
     flow_run_id: run.id,
     node_key: node.node_key,
@@ -525,7 +528,7 @@ async function executeHandoff(
   });
 
   await logEvent(db, run.id, "handoff", node.node_key, {
-    note: cfg.note ?? null,
+    note: renderedNote || null,
     assigned_to: cfg.assign_to ?? null,
     business_event_id: event.id,
   });
