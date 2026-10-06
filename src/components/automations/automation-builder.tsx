@@ -33,6 +33,7 @@ import {
   ArrowUp,
   MousePointerClick,
   List,
+  ImageIcon,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -61,6 +62,7 @@ import {
   blankListPayload,
 } from "@/components/interactive/interactive-builder"
 import { AiClassificationFields } from "@/components/automations/ai-classification-fields"
+import { AutomationMediaFields } from "@/components/automations/automation-media-fields"
 import { interactivePayloadPreviewText } from "@/lib/whatsapp/interactive"
 import { createClient } from "@/lib/supabase/client"
 import {
@@ -102,6 +104,7 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   send_buttons: { label: "send_buttons", icon: MousePointerClick, border: "border-l-primary" },
   send_list: { label: "send_list", icon: List, border: "border-l-primary" },
   send_template: { label: "send_template", icon: FileText, border: "border-l-primary" },
+  send_media: { label: "send_media", icon: ImageIcon, border: "border-l-primary" },
   add_tag: { label: "add_tag", icon: Tag, border: "border-l-primary" },
   remove_tag: { label: "remove_tag", icon: TagIcon, border: "border-l-primary" },
   assign_conversation: { label: "assign_conversation", icon: UserCheck, border: "border-l-primary" },
@@ -119,6 +122,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "send_buttons",
   "send_list",
   "send_template",
+  "send_media",
   "add_tag",
   "remove_tag",
   "assign_conversation",
@@ -180,6 +184,15 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return toStepConfig(blankListPayload())
     case "send_template":
       return { template_name: "", language: "en_US" }
+    case "send_media":
+      return { media_type: "image", media_url: "", caption: "", filename: "" }
+    case "send_media":
+      return (
+        <AutomationMediaFields
+          config={cfg}
+          onChange={(patch) => set(patch)}
+        />
+      )
     case "add_tag":
     case "remove_tag":
       return { tag_id: "" }
