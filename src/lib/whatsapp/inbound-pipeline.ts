@@ -24,6 +24,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { queueInboundTextTurn } from '@/lib/whatsapp/inbound-debounce'
 
 // ------------------------------------------------------------
 // Normalized shapes every provider's webhook route must produce.
@@ -628,6 +629,64 @@ export async function finishProcessingInboundMessage(
   // an account with zero automations configured.
   await applyStopKeywordIfMatched(db, accountId, contactRecord.id, msg.contentText)
 
+  const inboundText = msg.contentText ?? ''
+
+  // Free-text turns are aggregated durably before any Flow/Automation/AI
+  // decisioning. This avoids firing the LLM four times when a customer
+  // sends "Yes" / "for investment" / "2M AED" / "what yield?" as four
+  // separate WhatsApp bubbles. Interactive replies remain immediate.
+  if (
+    contentType === 'text' &&
+    !msg.interactiveReplyId &&
+    inboundText.trim()
+  ) {
+    try {
+      // Relationship event is safe to dispatch immediately and must fire
+      // exactly once; message-level reasoning waits for the debounce job.
+      if (wasContactCreated) {
+        await runAutomationsForTrigger({
+          accountId,
+          triggerType: 'new_contact_created',
+          contactId: contactRecord.id,
+          context: {
+            message_text: inboundText,
+            conversation_id: conversation.id,
+          },
+        })
+      }
+
+      await queueInboundTextTurn({
+        db,
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        providerMessageId: msg.providerMessageId,
+        text: inboundText,
+        isFirstInbound: isFirstInboundMessage,
+        delaySeconds: 35,
+      })
+
+      // Public message.received remains per-message and immediate. Only the
+      // conversational decision layer is debounced.
+      await dispatchWebhookEvent(db, accountId, 'message.received', {
+        conversation_id: conversation.id,
+        contact_id: contactRecord.id,
+        whatsapp_message_id: msg.providerMessageId,
+        content_type: contentType,
+        text: msg.contentText,
+      })
+      return
+    } catch (err) {
+      // Fail open to the previous immediate behavior. A migration/cron
+      // deployment issue must not strand customer replies.
+      console.error(
+        '[inbound-pipeline] debounce queue failed; using immediate dispatch:',
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
+
   const flowResult = await dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,
@@ -650,7 +709,6 @@ export async function finishProcessingInboundMessage(
   })
   const flowConsumed = flowResult.consumed
 
-  const inboundText = msg.contentText ?? ''
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
