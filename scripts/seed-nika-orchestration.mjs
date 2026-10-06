@@ -25,6 +25,7 @@ const managed = {
   selectionAutomation: 'Nika — Selection Reply → Qualification Flow',
   callAutomation: 'Nika — Call Request → Human Handoff',
   telegramAutomation: 'Nika — Human Handoff → Telegram',
+  webhookAutomation: 'Nika — Human Handoff → External Webhook',
 }
 
 const splitEnv = (name, fallback) =>
@@ -239,7 +240,7 @@ function buildFlowNodes() {
       node_type: 'handoff',
       config: {
         note:
-          'Qualified WhatsApp lead. Purpose={{vars.ai_extracted_purpose}}; budget={{vars.ai_extracted_budget}} {{vars.ai_extracted_currency}}; timeline={{vars.ai_extracted_timeline}}. Latest summary={{vars.ai_summary}}',
+          'Qualified WhatsApp lead. Purpose answer={{vars.purpose_answer}}; budget answer={{vars.budget_answer}}; timeline answer={{vars.timeline_answer}}. Latest AI summary={{vars.ai_summary}}',
       },
       position_x: 0,
       position_y: 1200,
@@ -489,6 +490,37 @@ async function main() {
   if (!telegramConnectionId) {
     console.log(
       '\nTelegram handoff automation is created/updated INACTIVE until a Telegram connection exists. Re-run this seed after connecting a bot.',
+    )
+  }
+
+  const handoffWebhookUrl = (process.env.NIKA_HANDOFF_WEBHOOK_URL || '').trim()
+  if (handoffWebhookUrl) {
+    let headers = {}
+    if (process.env.NIKA_HANDOFF_WEBHOOK_HEADERS_JSON) {
+      headers = JSON.parse(process.env.NIKA_HANDOFF_WEBHOOK_HEADERS_JSON)
+    }
+    await ensureAutomation(userId, {
+      name: managed.webhookAutomation,
+      description:
+        'Forwards durable human handoff business events to an external service.',
+      trigger_type: 'business_event',
+      trigger_config: { event_types: ['human_handoff_requested'] },
+      is_active: true,
+      steps: [
+        {
+          step_type: 'send_webhook',
+          step_config: {
+            url: handoffWebhookUrl,
+            headers,
+            body_template:
+              '{"event_id":"{{event.id}}","event_type":"{{event.type}}","contact_id":"{{contact.id}}","conversation_id":"{{conversation.id}}","reason":"{{event.reason}}","summary":"{{event.summary}}"}',
+          },
+        },
+      ],
+    })
+  } else {
+    console.log(
+      '\nNo NIKA_HANDOFF_WEBHOOK_URL set; external handoff webhook automation was not created.',
     )
   }
 
