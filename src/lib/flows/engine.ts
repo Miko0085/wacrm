@@ -43,7 +43,6 @@ import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { recordBusinessEvent } from "@/lib/business-events/record";
-import { runAutomationsForTrigger } from "@/lib/automations/engine";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
@@ -503,6 +502,7 @@ async function executeHandoff(
     payload: eventPayload,
   });
 
+  const { runAutomationsForTrigger } = await import("@/lib/automations/engine");
   await runAutomationsForTrigger({
     accountId: run.account_id,
     triggerType: "business_event",
