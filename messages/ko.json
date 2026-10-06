@@ -1177,7 +1177,11 @@
         "filenamePlaceholder": "invoice.pdf",
         "advanceAfterSending": "전송 후 다음 진행",
         "pickNextNode": "다음 노드를 선택하세요…",
-        "none": "— 없음 —"
+        "none": "— 없음 —",
+        "aiInstruction": "AI 판단 지침 (선택)",
+        "aiInputVar": "입력 변수",
+        "aiContextMessages": "대화 컨텍스트 메시지 수",
+        "aiDecisionHelp": "판단 전용 노드입니다. 고객에게 답장을 보내지 않으며 결과를 ai_primary_intent, ai_requires_human, ai_confidence, ai_extracted_* 등의 변수에 저장합니다."
       },
       "categories": {
         "messaging": "메시징",
@@ -1224,6 +1228,10 @@
         "end": {
           "label": "종료",
           "blurb": "플로우를 종료합니다"
+        },
+        "ai_decision": {
+          "label": "AI 판단",
+          "blurb": "최근 응답을 분류하고 구조화된 ai_* 변수를 저장합니다"
         }
       }
     },
