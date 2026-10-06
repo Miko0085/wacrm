@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { after } from 'next/server'
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
-import { resumePendingExecution } from '@/lib/automations/engine'
+import { dispatchStoredBusinessEvent, resumePendingExecution } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
 import {
   claimBroadcastDelivery,
@@ -89,6 +89,41 @@ export async function GET(request: Request) {
     processed++
   }
 
+  const { data: pendingBusinessEvents, error: businessEventError } = await admin
+    .from('business_events')
+    .select('id, account_id, event_type, contact_id, conversation_id, payload')
+    .is('dispatched_at', null)
+    .order('created_at', { ascending: true })
+    .limit(50)
+
+  if (businessEventError) {
+    return NextResponse.json(
+      { error: businessEventError.message, processed },
+      { status: 500 },
+    )
+  }
+
+  let businessEvents = 0
+  for (const event of pendingBusinessEvents ?? []) {
+    try {
+      await dispatchStoredBusinessEvent({
+        id: event.id as string,
+        account_id: event.account_id as string,
+        event_type: event.event_type as string,
+        contact_id: (event.contact_id as string | null) ?? null,
+        conversation_id: (event.conversation_id as string | null) ?? null,
+        payload: (event.payload as Record<string, unknown> | null) ?? {},
+      })
+      businessEvents++
+    } catch (error) {
+      console.error(
+        '[business-events] dispatch failed:',
+        event.id,
+        error instanceof Error ? error.message : error,
+      )
+    }
+  }
+
   const { data: dueBroadcasts, error: broadcastError } = await admin
     .from('broadcasts')
     .select('id, account_id, scheduled_at')
@@ -164,5 +199,6 @@ export async function GET(request: Request) {
   return NextResponse.json({
     processed,
     scheduled_broadcasts: scheduledBroadcasts,
+    business_events: businessEvents,
   })
 }
