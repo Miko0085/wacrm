@@ -873,6 +873,7 @@
         "wait": "대기",
         "condition": "조건 (If/Else)",
         "emit_business_event": "비즈니스 이벤트 발생",
+          "send_telegram": "Telegram 알림 보내기",
           "send_webhook": "웹훅 보내기",
         "close_conversation": "대화 닫기"
       },
