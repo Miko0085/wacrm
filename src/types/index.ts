@@ -419,6 +419,7 @@ export type AutomationStepType =
   | 'send_buttons'
   | 'send_list'
   | 'send_template'
+  | 'send_media'
   | 'add_tag'
   | 'remove_tag'
   | 'assign_conversation'
@@ -470,6 +471,13 @@ export interface SendTemplateStepConfig {
   template_name: string;
   language?: string;
   variables?: Record<string, string>;
+}
+
+export interface SendMediaStepConfig {
+  media_type: 'image' | 'video' | 'document';
+  media_url: string;
+  caption?: string;
+  filename?: string;
 }
 
 export interface TagStepConfig {
@@ -529,6 +537,7 @@ export type AutomationStepConfig =
   | SendButtonsStepConfig
   | SendListStepConfig
   | SendTemplateStepConfig
+  | SendMediaStepConfig
   | TagStepConfig
   | AssignConversationStepConfig
   | UpdateContactFieldStepConfig
