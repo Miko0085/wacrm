@@ -412,7 +412,8 @@ export type AutomationTriggerType =
   | 'conversation_assigned'
   | 'tag_added'
   | 'time_based'
-  | 'interactive_reply';
+  | 'interactive_reply'
+  | 'business_event';
 
 export type AutomationStepType =
   | 'send_message'
@@ -428,6 +429,8 @@ export type AutomationStepType =
   | 'wait'
   | 'condition'
   | 'ai_classification'
+  | 'emit_business_event'
+  | 'human_handoff'
   | 'send_webhook'
   | 'close_conversation';
 
@@ -452,12 +455,17 @@ export interface InteractiveReplyTriggerConfig {
   reply_ids: string[];
 }
 
+export interface BusinessEventTriggerConfig {
+  event_type: string;
+}
+
 export type AutomationTriggerConfig =
   | Record<string, never>
   | KeywordMatchTriggerConfig
   | TagTriggerConfig
   | TimeBasedTriggerConfig
   | InteractiveReplyTriggerConfig
+  | BusinessEventTriggerConfig
   | Record<string, unknown>;
 
 export interface SendMessageStepConfig {
@@ -527,6 +535,19 @@ export interface AiClassificationStepConfig {
   min_score?: number;
 }
 
+export interface EmitBusinessEventStepConfig {
+  event_type: string;
+  payload_template?: string;
+}
+
+export interface HumanHandoffStepConfig {
+  reason?: string;
+  summary?: string;
+  assign_agent_id?: string;
+  pause_ai?: boolean;
+  event_type?: string;
+}
+
 export interface SendWebhookStepConfig {
   url: string;
   headers?: Record<string, string>;
@@ -546,6 +567,8 @@ export type AutomationStepConfig =
   | WaitStepConfig
   | ConditionStepConfig
   | AiClassificationStepConfig
+  | EmitBusinessEventStepConfig
+  | HumanHandoffStepConfig
   | SendWebhookStepConfig
   | Record<string, never>
   | Record<string, unknown>;
