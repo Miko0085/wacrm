@@ -114,7 +114,7 @@ export async function GET(request: Request) {
     if (!claimed) continue
 
     try {
-      const { plan } = await planBroadcastResume(
+      const { plan, remaining } = await planBroadcastResume(
         admin,
         accountId,
         id,
@@ -127,6 +127,20 @@ export async function GET(request: Request) {
       after(async () => {
         try {
           await deliverBroadcast(admin, plan)
+
+          // planBroadcastResume caps one delivery pass. If a scheduled
+          // audience is larger, put the still-pending campaign back on
+          // the scheduler so the next cron tick continues automatically.
+          if (remaining > 0) {
+            await admin
+              .from('broadcasts')
+              .update({
+                status: 'scheduled',
+                scheduled_at: new Date().toISOString(),
+              })
+              .eq('id', id)
+              .eq('status', 'sending')
+          }
         } catch (error) {
           console.error(
             '[broadcast-scheduler] delivery failed:',
