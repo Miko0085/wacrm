@@ -106,6 +106,35 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
   }
 }
 
+export async function dispatchStoredBusinessEvent(event: {
+  id: string
+  account_id: string
+  event_type: string
+  contact_id: string | null
+  conversation_id: string | null
+  payload: Record<string, unknown> | null
+}): Promise<void> {
+  const db = supabaseAdmin()
+  const payload = event.payload ?? {}
+  await runAutomationsForTrigger({
+    accountId: event.account_id,
+    triggerType: 'business_event',
+    contactId: event.contact_id,
+    context: {
+      conversation_id: event.conversation_id ?? undefined,
+      business_event_id: event.id,
+      business_event_type: event.event_type,
+      business_event_payload: payload,
+      vars: {
+        business_event_id: event.id,
+        business_event_type: event.event_type,
+        _business_event_chain_depth: 1,
+      },
+    },
+  })
+  await markBusinessEventDispatched(db, event.id)
+}
+
 export async function resumePendingExecution(pending: {
   id: string
   automation_id: string
