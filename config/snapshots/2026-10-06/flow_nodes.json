@@ -1,0 +1,81 @@
+[
+  {
+    "id": "bceb5cb6-fddf-49ec-bfc7-bd1424d06b25",
+    "flow_id": "55187162-e8e3-4ed7-8f6f-0eaaf61c3342",
+    "node_key": "start",
+    "node_type": "start",
+    "config": {
+      "next_node_key": "intro"
+    },
+    "position_x": "0",
+    "position_y": "0",
+    "created_at": "2026-10-03 19:43:46.954513+00"
+  },
+  {
+    "id": "1116aa3c-0939-48ac-9e8a-2a32b9753e28",
+    "flow_id": "55187162-e8e3-4ed7-8f6f-0eaaf61c3342",
+    "node_key": "intro",
+    "node_type": "send_message",
+    "config": {
+      "text": "Welcome! 👋 I'll ask a few quick questions so we can get you to the right person.",
+      "next_node_key": "ask_name"
+    },
+    "position_x": "0",
+    "position_y": "0",
+    "created_at": "2026-10-03 19:43:46.954513+00"
+  },
+  {
+    "id": "46808d8d-0cf4-4ffc-bc3b-52dd26a95aa6",
+    "flow_id": "55187162-e8e3-4ed7-8f6f-0eaaf61c3342",
+    "node_key": "ask_name",
+    "node_type": "collect_input",
+    "config": {
+      "var_key": "name",
+      "prompt_text": "What's your name?",
+      "next_node_key": "ask_email"
+    },
+    "position_x": "0",
+    "position_y": "0",
+    "created_at": "2026-10-03 19:43:46.954513+00"
+  },
+  {
+    "id": "42024b27-c14a-4632-8d67-8e9889cb9222",
+    "flow_id": "55187162-e8e3-4ed7-8f6f-0eaaf61c3342",
+    "node_key": "ask_email",
+    "node_type": "collect_input",
+    "config": {
+      "var_key": "email",
+      "prompt_text": "Thanks {{vars.name}}! What's your work email?",
+      "next_node_key": "ask_company"
+    },
+    "position_x": "0",
+    "position_y": "0",
+    "created_at": "2026-10-03 19:43:46.954513+00"
+  },
+  {
+    "id": "7003f103-d684-4878-b321-e522a98a0371",
+    "flow_id": "55187162-e8e3-4ed7-8f6f-0eaaf61c3342",
+    "node_key": "ask_company",
+    "node_type": "collect_input",
+    "config": {
+      "var_key": "company",
+      "prompt_text": "Almost done — what's your company name?",
+      "next_node_key": "handoff"
+    },
+    "position_x": "0",
+    "position_y": "0",
+    "created_at": "2026-10-03 19:43:46.954513+00"
+  },
+  {
+    "id": "10bce5bc-269a-43dc-aeab-ae809c09dad2",
+    "flow_id": "55187162-e8e3-4ed7-8f6f-0eaaf61c3342",
+    "node_key": "handoff",
+    "node_type": "handoff",
+    "config": {
+      "note": "New lead — name={{vars.name}}, email={{vars.email}}, company={{vars.company}}."
+    },
+    "position_x": "0",
+    "position_y": "0",
+    "created_at": "2026-10-03 19:43:46.954513+00"
+  }
+]
