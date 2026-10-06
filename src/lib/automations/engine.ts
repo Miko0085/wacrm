@@ -600,6 +600,15 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
       const text = (args.context.message_text ?? '').toString()
       return text.toLowerCase().includes((cfg.value ?? '').toLowerCase())
     }
+    case 'variable': {
+      if (!cfg.operand) return false
+      const key = cfg.operand.startsWith('vars.')
+        ? cfg.operand.slice('vars.'.length)
+        : cfg.operand
+      const value = args.context.vars?.[key]
+      if (value === undefined || value === null) return false
+      return String(value) === String(cfg.value ?? '')
+    }
     case 'time_of_day': {
       const [from, to] = (cfg.operand ?? '').split('-')
       if (!from || !to) return false

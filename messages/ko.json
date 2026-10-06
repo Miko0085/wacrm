@@ -998,12 +998,14 @@
           "tag_presence": "태그 존재 여부",
           "contact_field": "연락처 필드",
           "message_content": "메시지 내용",
-          "time_of_day": "시간대"
+          "time_of_day": "시간대",
+          "variable": "자동화 변수"
         },
         "operandLabel": "피연산자",
         "placeholderTime": "HH:mm-HH:mm",
         "placeholderContact": "이름 / 이메일 / 회사",
         "placeholderTag": "태그 id",
+        "placeholderVariable": "ai_intent 또는 vars.ai_intent",
         "urlLabel": "URL",
         "headersLabel": "헤더",
         "placeholderHeaders": "{\"Authorization\": \"Bearer ...\"}",

@@ -510,7 +510,8 @@ export type ConditionSubject =
   | 'contact_field'
   | 'tag_presence'
   | 'message_content'
-  | 'time_of_day';
+  | 'time_of_day'
+  | 'variable';
 
 export interface ConditionStepConfig {
   subject: ConditionSubject;

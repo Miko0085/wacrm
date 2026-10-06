@@ -186,13 +186,6 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return { template_name: "", language: "en_US" }
     case "send_media":
       return { media_type: "image", media_url: "", caption: "", filename: "" }
-    case "send_media":
-      return (
-        <AutomationMediaFields
-          config={cfg}
-          onChange={(patch) => set(patch)}
-        />
-      )
     case "add_tag":
     case "remove_tag":
       return { tag_id: "" }
@@ -1230,6 +1223,13 @@ function StepEditor({
           t={t}
         />
       )
+    case "send_media":
+      return (
+        <AutomationMediaFields
+          config={cfg}
+          onChange={(patch) => set(patch)}
+        />
+      )
     case "add_tag":
     case "remove_tag":
       return (
@@ -1349,6 +1349,7 @@ function StepEditor({
               <option value="contact_field">{t("config.subjects.contact_field")}</option>
               <option value="message_content">{t("config.subjects.message_content")}</option>
               <option value="time_of_day">{t("config.subjects.time_of_day")}</option>
+              <option value="variable">{t("config.subjects.variable")}</option>
             </select>
           </FieldBlock>
           <FieldBlock label={t("config.operandLabel")}>
@@ -1360,14 +1361,18 @@ function StepEditor({
                     ? t("config.placeholderContact")
                     : cfg.subject === "tag_presence"
                       ? t("config.placeholderTag")
-                      : ""
+                      : cfg.subject === "variable"
+                        ? t("config.placeholderVariable")
+                        : ""
               }
               value={(cfg.operand as string) ?? ""}
               onChange={(e) => set({ operand: e.target.value })}
               className="bg-muted text-foreground"
             />
           </FieldBlock>
-          {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
+          {(cfg.subject === "contact_field" ||
+            cfg.subject === "message_content" ||
+            cfg.subject === "variable") && (
             <FieldBlock label="Value">
               <Input
                 value={(cfg.value as string) ?? ""}
