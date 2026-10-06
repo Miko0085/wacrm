@@ -512,6 +512,25 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
       return 'deal created'
     }
+    case 'start_flow': {
+      const cfg = step.step_config as StartFlowStepConfig
+      if (!cfg.flow_id) throw new Error('start_flow needs flow_id')
+      if (!args.contactId) throw new Error('start_flow needs a contact')
+      const conversationId = await resolveConversationId(args)
+      const initialVars: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(cfg.initial_vars ?? {})) {
+        initialVars[key] = interpolate(String(value), args)
+      }
+      const result = await startFlowById({
+        accountId: args.automation.account_id,
+        flowId: cfg.flow_id,
+        userId: args.automation.user_id,
+        contactId: args.contactId,
+        conversationId,
+        initialVars,
+      })
+      return `flow started (${result.flow_run_id ?? result.outcome})`
+    }
     case 'send_telegram': {
       const cfg = step.step_config as SendTelegramStepConfig
       if (!cfg.connection_id) throw new Error('send_telegram needs connection_id')
