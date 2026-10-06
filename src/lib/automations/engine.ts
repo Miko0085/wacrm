@@ -537,6 +537,49 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
   }
 }
 
+const MAX_BUSINESS_EVENT_CHAIN_DEPTH = 8
+
+async function emitAndDispatchBusinessEvent(
+  args: ExecuteArgs,
+  eventType: string,
+  payload: Record<string, unknown>,
+): Promise<{ id: string; event_type: string }> {
+  const depth = Number(args.context.vars?._business_event_chain_depth ?? 0)
+  if (!Number.isFinite(depth) || depth >= MAX_BUSINESS_EVENT_CHAIN_DEPTH) {
+    throw new Error('business event chain depth exceeded')
+  }
+
+  const event = await persistBusinessEvent(supabaseAdmin(), {
+    accountId: args.automation.account_id,
+    userId: args.automation.user_id,
+    eventType,
+    contactId: args.contactId,
+    conversationId: args.context.conversation_id ?? null,
+    source: 'automation',
+    payload: { ...payload, automation_id: args.automation.id },
+  })
+
+  await runAutomationsForTrigger({
+    accountId: args.automation.account_id,
+    triggerType: 'business_event',
+    contactId: args.contactId,
+    context: {
+      ...args.context,
+      business_event_id: event.id,
+      business_event_type: event.event_type,
+      business_event_payload: payload,
+      vars: {
+        ...(args.context.vars ?? {}),
+        business_event_id: event.id,
+        business_event_type: event.event_type,
+        _business_event_chain_depth: depth + 1,
+      },
+    },
+  })
+
+  return event
+}
+
 async function resolveConversationId(args: ExecuteArgs): Promise<string> {
   const fromCtx = args.context.conversation_id
   if (fromCtx) return fromCtx
