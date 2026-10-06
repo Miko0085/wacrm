@@ -196,6 +196,11 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
         issues.push({ path: `${path}.payload_template`, message: 'business event payload must be JSON text' })
       }
       break
+    case 'start_flow':
+      if (!nonEmpty(c.flow_id)) {
+        issues.push({ path: `${path}.flow_id`, message: 'flow is required' })
+      }
+      break
     case 'send_telegram':
       if (!nonEmpty(c.connection_id)) {
         issues.push({ path: `${path}.connection_id`, message: 'Telegram connection is required' })
