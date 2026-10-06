@@ -28,6 +28,7 @@ import {
   Webhook,
   RadioTower,
   Send,
+  PlayCircle,
   CircleSlash,
   Zap,
   Loader2,
@@ -117,6 +118,7 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   ai_classification: { label: "ai_classification", icon: Zap, border: "border-l-violet-500" },
   emit_business_event: { label: "emit_business_event", icon: RadioTower, border: "border-l-cyan-500" },
   send_telegram: { label: "send_telegram", icon: Send, border: "border-l-sky-500" },
+  start_flow: { label: "start_flow", icon: PlayCircle, border: "border-l-emerald-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
 }
@@ -137,6 +139,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "ai_classification",
   "emit_business_event",
   "send_telegram",
+  "start_flow",
   "send_webhook",
   "close_conversation",
 ]
@@ -219,6 +222,8 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return { event_type: "human_handoff_requested", source: "automation", payload_template: "{}" }
     case "send_telegram":
       return { connection_id: "", chat_id: "", message: "", parse_mode: "HTML" }
+    case "start_flow":
+      return { flow_id: "" }
     case "send_webhook":
       return { url: "", headers: {}, body_template: "" }
     case "close_conversation":
@@ -833,6 +838,27 @@ function TriggerCard({
                 />
               </div>
             )}
+            {type === "business_event" && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Business event types
+                </label>
+                <Input
+                  placeholder="human_handoff_requested, call_requested"
+                  value={Array.isArray(config.event_types) ? (config.event_types as string[]).join(", ") : ""}
+                  onChange={(e) =>
+                    onConfigChange({
+                      ...config,
+                      event_types: e.target.value
+                        .split(",")
+                        .map((v) => v.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  className="bg-muted text-foreground"
+                />
+              </div>
+            )}
             {type === "time_based" && (
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -1423,6 +1449,17 @@ function StepEditor({
             />
           </FieldBlock>
         </>
+      )
+    case "start_flow":
+      return (
+        <FieldBlock label="Flow ID">
+          <Input
+            value={(cfg.flow_id as string) ?? ""}
+            onChange={(e) => set({ flow_id: e.target.value })}
+            placeholder="Flow UUID"
+            className="bg-muted font-mono text-foreground"
+          />
+        </FieldBlock>
       )
     case "send_telegram":
       return (
