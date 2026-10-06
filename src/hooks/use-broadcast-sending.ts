@@ -386,6 +386,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         type: payload.audience.type,
         tagIds: payload.audience.tagIds,
         customField: payload.audience.customField,
+        csvContacts: payload.audience.csvContacts,
         excludeTagIds: payload.audience.excludeTagIds,
         headerMediaUrl: payload.headerMediaUrl?.trim() || undefined,
         resolvedCount: contacts.length,
