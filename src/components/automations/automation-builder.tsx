@@ -240,6 +240,20 @@ interface AutomationResources {
   customFields: CustomField[]
   pipelines: PipelineOption[]
   stages: PipelineStageOption[]
+  telegramConnections: TelegramConnectionOption[]
+  flows: FlowOption[]
+}
+
+interface TelegramConnectionOption {
+  id: string
+  name: string
+  is_active: boolean
+}
+
+interface FlowOption {
+  id: string
+  name: string
+  status: string
 }
 
 interface PipelineOption {
@@ -261,6 +275,8 @@ const ResourcesContext = createContext<AutomationResources>({
   customFields: [],
   pipelines: [],
   stages: [],
+  telegramConnections: [],
+  flows: [],
 })
 
 function useResources(): AutomationResources {
@@ -274,14 +290,23 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
   const [customFields, setCustomFields] = useState<CustomField[]>([])
   const [pipelines, setPipelines] = useState<PipelineOption[]>([])
   const [stages, setStages] = useState<PipelineStageOption[]>([])
+  const [telegramConnections, setTelegramConnections] = useState<TelegramConnectionOption[]>([])
+  const [flows, setFlows] = useState<FlowOption[]>([])
 
   useEffect(() => {
     let cancelled = false
     const supabase = createClient()
 
     void (async () => {
-      const [tagsRes, templatesRes, customFieldsRes, pipelinesRes, stagesRes] =
-        await Promise.all([
+      const [
+        tagsRes,
+        templatesRes,
+        customFieldsRes,
+        pipelinesRes,
+        stagesRes,
+        telegramRes,
+        flowsRes,
+      ] = await Promise.all([
           supabase.from("tags").select("*").order("name"),
           supabase
             .from("message_templates")
@@ -294,6 +319,16 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
             .from("pipeline_stages")
             .select("id, name, pipeline_id, position")
             .order("position"),
+          supabase
+            .from("telegram_connections")
+            .select("id, name, is_active")
+            .eq("is_active", true)
+            .order("name"),
+          supabase
+            .from("flows")
+            .select("id, name, status")
+            .neq("status", "archived")
+            .order("name"),
         ])
       if (cancelled) return
       setTags((tagsRes.data as TagRecord[] | null) ?? [])
@@ -301,6 +336,10 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
       setCustomFields((customFieldsRes.data as CustomField[] | null) ?? [])
       setPipelines((pipelinesRes.data as PipelineOption[] | null) ?? [])
       setStages((stagesRes.data as PipelineStageOption[] | null) ?? [])
+      setTelegramConnections(
+        (telegramRes.data as TelegramConnectionOption[] | null) ?? [],
+      )
+      setFlows((flowsRes.data as FlowOption[] | null) ?? [])
     })()
 
     void (async () => {
@@ -321,7 +360,16 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
 
   return (
     <ResourcesContext.Provider
-      value={{ tags, members, templates, customFields, pipelines, stages }}
+      value={{
+        tags,
+        members,
+        templates,
+        customFields,
+        pipelines,
+        stages,
+        telegramConnections,
+        flows,
+      }}
     >
       {children}
     </ResourcesContext.Provider>
@@ -375,6 +423,78 @@ function TagSelect({
         )}
       </select>
     </div>
+  )
+}
+
+function TelegramConnectionSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { telegramConnections } = useResources()
+  if (telegramConnections.length === 0) {
+    return (
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Connect a bot in Settings → Telegram"
+        className="bg-muted font-mono text-foreground"
+      />
+    )
+  }
+  const selected = telegramConnections.find((item) => item.id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="">Select Telegram bot…</option>
+      {telegramConnections.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name}
+        </option>
+      ))}
+      {value && !selected && <option value={value}>{value} (unknown)</option>}
+    </select>
+  )
+}
+
+function FlowSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { flows } = useResources()
+  if (flows.length === 0) {
+    return (
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Flow UUID"
+        className="bg-muted font-mono text-foreground"
+      />
+    )
+  }
+  const selected = flows.find((item) => item.id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="">Select flow…</option>
+      {flows.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name} ({item.status})
+        </option>
+      ))}
+      {value && !selected && <option value={value}>{value} (unknown)</option>}
+    </select>
   )
 }
 
@@ -1452,24 +1572,20 @@ function StepEditor({
       )
     case "start_flow":
       return (
-        <FieldBlock label="Flow ID">
-          <Input
+        <FieldBlock label="Flow">
+          <FlowSelect
             value={(cfg.flow_id as string) ?? ""}
-            onChange={(e) => set({ flow_id: e.target.value })}
-            placeholder="Flow UUID"
-            className="bg-muted font-mono text-foreground"
+            onChange={(flowId) => set({ flow_id: flowId })}
           />
         </FieldBlock>
       )
     case "send_telegram":
       return (
         <>
-          <FieldBlock label="Telegram connection ID">
-            <Input
+          <FieldBlock label="Telegram bot">
+            <TelegramConnectionSelect
               value={(cfg.connection_id as string) ?? ""}
-              onChange={(e) => set({ connection_id: e.target.value })}
-              placeholder="Connection UUID from Settings → Telegram"
-              className="bg-muted font-mono text-foreground"
+              onChange={(connectionId) => set({ connection_id: connectionId })}
             />
           </FieldBlock>
           <FieldBlock label="Chat ID override">
