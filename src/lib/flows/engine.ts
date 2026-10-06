@@ -1091,6 +1091,7 @@ async function startNewRun(
   flow: FlowRow,
   input: DispatchInboundInput,
   nodes: Map<string, FlowNodeRow>,
+  initialVars: Record<string, unknown> = {},
 ): Promise<DispatchInboundResult> {
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
@@ -1111,6 +1112,7 @@ async function startNewRun(
       conversation_id: input.conversationId,
       status: "active",
       current_node_key: flow.entry_node_id,
+      vars: initialVars,
     })
     .select("*")
     .maybeSingle();
@@ -1203,15 +1205,8 @@ export async function startFlowById(args: {
       },
     },
     nodes,
+    args.initialVars ?? {},
   )
-
-  if (result.flow_run_id && args.initialVars && Object.keys(args.initialVars).length > 0) {
-    await db
-      .from("flow_runs")
-      .update({ vars: args.initialVars })
-      .eq("id", result.flow_run_id)
-      .eq("account_id", args.accountId)
-  }
 
   return result
 }
