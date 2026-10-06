@@ -7,6 +7,7 @@ import type {
   AiClassificationStepConfig,
   KeywordMatchTriggerConfig,
   InteractiveReplyTriggerConfig,
+  BusinessEventTriggerConfig,
   TagTriggerConfig,
   SendMessageStepConfig,
   SendButtonsStepConfig,
@@ -19,6 +20,10 @@ import type {
   WaitStepConfig,
   CreateDealStepConfig,
   AssignConversationStepConfig,
+  EmitBusinessEventStepConfig,
+  HumanHandoffStepConfig,
+  SendTelegramStepConfig,
+  StartFlowStepConfig,
 } from '@/types'
 import { supabaseAdmin } from './admin-client'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
@@ -32,6 +37,9 @@ import {
   classificationTakesYesBranch,
   classificationVars,
 } from './ai-classification'
+import { persistBusinessEvent } from './business-events'
+import { sendTelegramMessage } from '@/lib/integrations/telegram'
+import { startFlowById } from '@/lib/flows/engine'
 
 export interface AutomationContext {
   message_text?: string
@@ -40,6 +48,9 @@ export interface AutomationContext {
   tag_id?: string
   agent_id?: string
   interactive_reply_id?: string
+  business_event_id?: string
+  business_event_type?: string
+  business_event_payload?: Record<string, unknown>
 }
 
 export interface DispatchInput {
@@ -573,6 +584,11 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
     const replyId = ctx?.interactive_reply_id
     if (!replyId || !Array.isArray(cfg?.reply_ids) || cfg.reply_ids.length === 0) return false
     return cfg.reply_ids.includes(replyId)
+  }
+  if (automation.trigger_type === 'business_event') {
+    const cfg = automation.trigger_config as BusinessEventTriggerConfig
+    const eventType = ctx?.business_event_type
+    return Boolean(eventType && cfg?.event_type && cfg.event_type === eventType)
   }
   if (automation.trigger_type === 'tag_added') {
     const cfg = automation.trigger_config as TagTriggerConfig
