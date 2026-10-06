@@ -41,6 +41,10 @@ import {
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
+import {
+  classifyAutomationMessage,
+  classificationVars,
+} from "@/lib/automations/ai-classification";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import {
   type CollectInputNodeConfig,
@@ -56,6 +60,7 @@ import {
   type SendMediaNodeConfig,
   type SendMessageNodeConfig,
   type SetTagNodeConfig,
+  type AiDecisionNodeConfig,
   type StartNodeConfig,
   type KeywordTriggerConfig,
 } from "./types";
@@ -140,7 +145,8 @@ export function isAutoAdvancing(node_type: string): boolean {
     node_type === "send_message" ||
     node_type === "send_media" ||
     node_type === "condition" ||
-    node_type === "set_tag"
+    node_type === "set_tag" ||
+    node_type === "ai_decision"
   );
 }
 
@@ -738,6 +744,62 @@ async function advanceFromNodeKey(
       });
       continue;
     }
+    if (node.node_type === "ai_decision") {
+      const cfg = node.config as unknown as AiDecisionNodeConfig;
+      const inputKey = cfg.input_var?.trim() || "_last_inbound_text";
+      const messageText = String(run.vars[inputKey] ?? "");
+      if (!messageText.trim()) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "ai_decision_missing_input",
+          input_var: inputKey,
+        });
+        await endRun(db, run.id, "failed", "ai_decision_missing_input");
+        return { outcome: "completed" };
+      }
+      try {
+        const result = await classifyAutomationMessage({
+          db,
+          accountId: run.account_id,
+          conversationId: run.conversation_id ?? undefined,
+          messageText,
+          config: {
+            instruction:
+              cfg.instruction?.trim() ||
+              "Understand the customer message, identify intents, extract qualification data, and decide whether a human is required.",
+            input_template: "{{message.text}}",
+            context_messages: cfg.context_messages ?? 8,
+            positive_intent: "positive",
+            min_score: 60,
+          },
+        });
+        const nextVars = {
+          ...run.vars,
+          ...classificationVars(result),
+        };
+        const { error: varsErr } = await db
+          .from("flow_runs")
+          .update({ vars: nextVars })
+          .eq("id", run.id)
+          .eq("account_id", run.account_id);
+        if (varsErr) throw varsErr;
+        run.vars = nextVars;
+        await logEvent(db, run.id, "node_entered", node.node_key, {
+          ai_primary_intent: result.primary_intent,
+          ai_confidence: result.confidence,
+          ai_requires_human: result.requires_human,
+          ai_safe_to_answer: result.safe_to_answer,
+        });
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "ai_decision_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "ai_decision_failed");
+        return { outcome: "completed" };
+      }
+      currentKey = cfg.next_node_key;
+      continue;
+    }
     if (node.node_type === "set_tag") {
       const cfg = node.config as unknown as SetTagNodeConfig;
       try {
@@ -976,7 +1038,11 @@ async function handleReplyForActiveRun(
     const captured = message.text.trim();
     if (captured.length > 0 && cfg.var_key) {
       // Persist captured value + reset reprompt count atomically.
-      const newVars = { ...run.vars, [cfg.var_key]: captured };
+      const newVars = {
+        ...run.vars,
+        [cfg.var_key]: captured,
+        _last_inbound_text: captured,
+      };
       const { error: capErr } = await db
         .from("flow_runs")
         .update({
