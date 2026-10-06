@@ -40,3 +40,19 @@ export async function persistBusinessEvent(
     event_type: data.event_type as string,
   }
 }
+
+
+export async function markBusinessEventDispatched(
+  db: SupabaseClient,
+  eventId: string,
+): Promise<void> {
+  const { error } = await db
+    .from('business_events')
+    .update({ dispatched_at: new Date().toISOString() })
+    .eq('id', eventId)
+    .is('dispatched_at', null)
+
+  if (error) {
+    throw new Error(`business event dispatch mark failed: ${error.message}`)
+  }
+}
