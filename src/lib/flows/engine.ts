@@ -479,6 +479,8 @@ async function executeHandoff(
   const cfg = node.config as { assign_to?: string; note?: string };
   const convUpdate: Record<string, unknown> = {
     status: "pending",
+    ai_autoreply_disabled: true,
+    ai_handoff_summary: cfg.note ?? "Flow requested human handoff",
     updated_at: new Date().toISOString(),
   };
   if (cfg.assign_to) convUpdate.assigned_agent_id = cfg.assign_to;
@@ -1043,6 +1045,21 @@ export async function dispatchInboundToFlows(
       return handleReplyForActiveRun(db, activeRun, input.message, nodes);
     }
 
+    // No active run. If a human already owns the thread (or a previous
+    // handoff paused AI), do not silently start a fresh conversational
+    // journey on the next customer message. Automations still receive the
+    // message because we return consumed:false.
+    const { data: handoffState } = await db
+      .from("conversations")
+      .select("assigned_agent_id, ai_autoreply_disabled")
+      .eq("id", input.conversationId)
+      .eq("account_id", input.accountId)
+      .maybeSingle();
+
+    if (handoffState?.assigned_agent_id || handoffState?.ai_autoreply_disabled) {
+      return { consumed: false, outcome: "no_match" };
+    }
+
     // No active run → look for a flow whose entry trigger matches.
     const flow = await findEntryFlow(
       db,
@@ -1221,11 +1238,49 @@ async function handleReplyForActiveRun(
     if (run.conversation_id) {
       await db
         .from("conversations")
-        .update({ status: "pending", updated_at: new Date().toISOString() })
+        .update({
+          status: "pending",
+          ai_autoreply_disabled: true,
+          ai_handoff_summary: "Flow fallback exhausted; human review required",
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", run.conversation_id);
     }
+
+    const eventPayload = {
+      reason: "fallback_exhausted",
+      summary: "Flow fallback exhausted; human review required",
+      flow_id: run.flow_id,
+      flow_run_id: run.id,
+      node_key: run.current_node_key,
+      vars: run.vars,
+    };
+    const event = await recordBusinessEvent(db, {
+      accountId: run.account_id,
+      userId: run.user_id,
+      contactId: run.contact_id,
+      conversationId: run.conversation_id,
+      eventType: "human_handoff_requested",
+      source: "flow_fallback",
+      payload: eventPayload,
+    });
+    const { runAutomationsForTrigger } = await import("@/lib/automations/engine");
+    await runAutomationsForTrigger({
+      accountId: run.account_id,
+      triggerType: "business_event",
+      contactId: run.contact_id,
+      context: {
+        conversation_id: run.conversation_id ?? undefined,
+        business_event_id: event.id,
+        business_event_type: "human_handoff_requested",
+        business_event_payload: eventPayload,
+        vars: run.vars,
+      },
+    });
+
     await logEvent(db, run.id, "handoff", run.current_node_key, {
       reason: "fallback_exhausted",
+      business_event_id: event.id,
     });
     await endRun(db, run.id, "handed_off", "fallback_exhausted");
     return { consumed: true, flow_run_id: run.id, outcome: "handed_off" };
