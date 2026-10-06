@@ -9,6 +9,7 @@ create table if not exists public.business_events (
   conversation_id uuid null references public.conversations(id) on delete set null,
   source text not null default 'system',
   payload jsonb not null default '{}'::jsonb,
+  dispatched_at timestamptz null,
   created_at timestamptz not null default now()
 );
 
@@ -17,6 +18,10 @@ create index if not exists idx_business_events_account_created
 
 create index if not exists idx_business_events_account_type_created
   on public.business_events(account_id, event_type, created_at desc);
+
+create index if not exists idx_business_events_pending_dispatch
+  on public.business_events(created_at)
+  where dispatched_at is null;
 
 alter table public.business_events enable row level security;
 
