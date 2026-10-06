@@ -839,6 +839,15 @@ function TriggerCard({
                 />
               </div>
             )}
+            {type === "business_event" && (
+              <FieldBlock label={t("config.eventTypeLabel")}>
+                <Input
+                  value={(config.event_type as string) ?? ""}
+                  onChange={(e) => onConfigChange({ ...config, event_type: e.target.value })}
+                  className="bg-muted text-foreground"
+                />
+              </FieldBlock>
+            )}
             {type === "time_based" && (
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">
