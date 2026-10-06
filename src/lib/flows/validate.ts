@@ -657,6 +657,45 @@ function validateNode(
       break;
     }
 
+    case "ai_decision": {
+      const cfg = node.config as {
+        input_var?: string;
+        context_messages?: number;
+        next_node_key?: string;
+      };
+      if (cfg.context_messages != null && (
+        !Number.isInteger(cfg.context_messages) ||
+        cfg.context_messages < 1 ||
+        cfg.context_messages > 20
+      )) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "context_messages",
+          message: "AI Decision context_messages must be between 1 and 20.",
+        });
+      }
+      if (!cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "AI Decision node must point to a next node.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `AI Decision points to non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
     case "set_tag": {
       const cfg = node.config as {
         mode?: "add" | "remove";
