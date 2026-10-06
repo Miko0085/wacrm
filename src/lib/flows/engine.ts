@@ -1153,3 +1153,65 @@ async function startNewRun(
     outcome: outcome.outcome === "advanced" ? "started" : outcome.outcome,
   };
 }
+
+
+/**
+ * Start one active flow explicitly from an Automation.
+ * Existing active runs still win: the DB unique index prevents two
+ * simultaneous active journeys for one account/contact.
+ */
+export async function startFlowById(args: {
+  accountId: string
+  flowId: string
+  userId: string
+  contactId: string
+  conversationId: string
+  initialVars?: Record<string, unknown>
+}): Promise<DispatchInboundResult> {
+  const db = supabaseAdmin()
+  const { data, error } = await db
+    .from("flows")
+    .select("*")
+    .eq("id", args.flowId)
+    .eq("account_id", args.accountId)
+    .eq("status", "active")
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) throw new Error("Flow not found or not active")
+  const flow = data as FlowRow
+  if (!flow.entry_node_id) throw new Error("Flow has no entry node")
+
+  const existing = await loadActiveRunForContact(db, args.accountId, args.contactId)
+  if (existing) {
+    return { consumed: true, flow_run_id: existing.id, outcome: "started" }
+  }
+
+  const nodes = await loadAllNodes(db, flow.id)
+  const result = await startNewRun(
+    db,
+    flow,
+    {
+      accountId: args.accountId,
+      userId: args.userId,
+      contactId: args.contactId,
+      conversationId: args.conversationId,
+      message: {
+        kind: "text",
+        text: "",
+        meta_message_id: `manual:${args.flowId}:${args.contactId}:${Date.now()}`,
+      },
+    },
+    nodes,
+  )
+
+  if (result.flow_run_id && args.initialVars && Object.keys(args.initialVars).length > 0) {
+    await db
+      .from("flow_runs")
+      .update({ vars: args.initialVars })
+      .eq("id", result.flow_run_id)
+      .eq("account_id", args.accountId)
+  }
+
+  return result
+}
