@@ -512,6 +512,42 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
       return 'deal created'
     }
+    case 'human_handoff': {
+      const cfg = step.step_config as HumanHandoffStepConfig
+      if (!args.contactId) throw new Error('human_handoff needs a contact')
+      const conversationId = await resolveConversationId(args)
+      const reason = cfg.reason
+        ? interpolate(cfg.reason, args)
+        : String(args.context.vars?.ai_reason ?? 'Human assistance requested')
+      const summary = cfg.summary
+        ? interpolate(cfg.summary, args)
+        : String(args.context.vars?.ai_summary ?? '')
+      const update: Record<string, unknown> = {
+        status: 'pending',
+        updated_at: new Date().toISOString(),
+        ai_handoff_summary: summary || reason,
+      }
+      if (cfg.pause_ai !== false) update.ai_autoreply_disabled = true
+      if (cfg.assign_agent_id) update.assigned_agent_id = cfg.assign_agent_id
+      const { error } = await db
+        .from('conversations')
+        .update(update)
+        .eq('id', conversationId)
+        .eq('account_id', args.automation.account_id)
+      if (error) throw new Error(`human_handoff update failed: ${error.message}`)
+      const event = await emitAndDispatchBusinessEvent(
+        { ...args, context: { ...args.context, conversation_id: conversationId } },
+        cfg.event_type?.trim() || 'human_handoff_requested',
+        {
+          reason,
+          summary,
+          assigned_agent_id: cfg.assign_agent_id ?? null,
+          ai_intent: args.context.vars?.ai_primary_intent ?? args.context.vars?.ai_intent ?? null,
+          ai_confidence: args.context.vars?.ai_confidence ?? args.context.vars?.ai_score ?? null,
+        },
+      )
+      return `handoff requested via business event ${event.id}`
+    }
     case 'emit_business_event': {
       const cfg = step.step_config as EmitBusinessEventStepConfig
       if (!cfg.event_type?.trim()) throw new Error('emit_business_event needs event_type')
