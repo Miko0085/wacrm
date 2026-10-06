@@ -29,7 +29,7 @@ CREATE POLICY "Account members can view business events"
   USING (
     EXISTS (
       SELECT 1
-      FROM account_members am
+      FROM account_memberships am
       WHERE am.account_id = business_events.account_id
         AND am.user_id = auth.uid()
     )
