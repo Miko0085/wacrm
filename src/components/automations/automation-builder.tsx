@@ -154,7 +154,7 @@ function stepDisplayLabel(
   type: AutomationStepType,
   t: ReturnType<typeof useTranslations>,
 ): string {
-  if (type === "ai_classification") return "AI Classification"
+  if (type === "ai_classification") return "AI Decision"
   return t(`steps.${STEP_META[type].label}`)
 }
 
@@ -202,7 +202,7 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
     case "ai_classification":
       return {
         instruction:
-          "Determine whether the customer shows genuine interest in the offer and should be transferred to sales.",
+          "Understand the customer message, identify all relevant intents, extract useful qualification data, and decide whether a human is required.",
         input_template: "{{message.text}}",
         context_messages: 5,
         positive_intent: "positive",

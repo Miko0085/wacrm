@@ -286,7 +286,7 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
           step_id: step.id,
           step_type: 'ai_classification',
           status: 'success',
-          detail: `intent=${result.intent} score=${result.score} qualified=${result.qualified} branch=${taken ? 'yes' : 'no'}`,
+          detail: `intent=${result.intent} primary=${result.primary_intent} confidence=${result.confidence} requires_human=${result.requires_human} safe_to_answer=${result.safe_to_answer} score=${result.score} qualified=${result.qualified} branch=${taken ? 'yes' : 'no'}`,
         })
         await executeStepsFrom({
           ...args,

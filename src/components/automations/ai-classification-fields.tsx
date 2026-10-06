@@ -16,7 +16,7 @@ export function AiClassificationFields({
         <Textarea
           value={(config.instruction as string) ?? ""}
           onChange={(e) => onChange({ instruction: e.target.value })}
-          placeholder="Determine whether the customer is genuinely interested in the offer and should be transferred to sales."
+          placeholder="Understand the customer message, identify intents, extract qualification data, and decide whether a human is required."
           className="min-h-28 bg-muted text-foreground"
         />
       </Field>
@@ -71,7 +71,7 @@ export function AiClassificationFields({
       </Field>
 
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        Uses the AI provider configured in AI Agents → Setup. The structured result is available to later steps as <code>{"{{vars.ai_*}}"}</code>.
+        Decision only — this node does not send a WhatsApp reply. Uses the AI provider configured in AI Agents → Setup and exposes results to later steps through <code>{"{{vars.ai_*}}"}</code>, including <code>ai_primary_intent</code>, <code>ai_requires_human</code>, <code>ai_confidence</code>, and extracted qualification fields.
       </p>
     </div>
   )
