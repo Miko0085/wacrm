@@ -430,6 +430,7 @@ export type AutomationStepType =
   | 'condition'
   | 'ai_classification'
   | 'emit_business_event'
+  | 'send_telegram'
   | 'send_webhook'
   | 'close_conversation';
 
@@ -540,6 +541,13 @@ export interface EmitBusinessEventStepConfig {
   payload_template?: string;
 }
 
+export interface SendTelegramStepConfig {
+  connection_id: string;
+  chat_id?: string;
+  message: string;
+  parse_mode?: 'HTML' | 'Markdown' | 'MarkdownV2';
+}
+
 export interface SendWebhookStepConfig {
   url: string;
   headers?: Record<string, string>;
@@ -560,6 +568,7 @@ export type AutomationStepConfig =
   | ConditionStepConfig
   | AiClassificationStepConfig
   | EmitBusinessEventStepConfig
+  | SendTelegramStepConfig
   | SendWebhookStepConfig
   | Record<string, never>
   | Record<string, unknown>;
