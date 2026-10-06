@@ -1411,6 +1411,55 @@ function StepEditor({
       )
     case "ai_classification":
       return <AiClassificationFields config={cfg} onChange={set} />
+    case "emit_business_event":
+      return (
+        <>
+          <FieldBlock label={t("config.eventTypeLabel")}>
+            <Input value={(cfg.event_type as string) ?? ""} onChange={(e) => set({ event_type: e.target.value })} className="bg-muted text-foreground" />
+          </FieldBlock>
+          <FieldBlock label={t("config.payloadTemplateLabel")}>
+            <Textarea value={(cfg.payload_template as string) ?? "{}"} onChange={(e) => set({ payload_template: e.target.value })} className="min-h-20 bg-muted font-mono text-xs text-foreground" />
+          </FieldBlock>
+        </>
+      )
+    case "human_handoff":
+      return (
+        <>
+          <FieldBlock label={t("config.reasonLabel")}>
+            <Input value={(cfg.reason as string) ?? ""} onChange={(e) => set({ reason: e.target.value })} className="bg-muted text-foreground" />
+          </FieldBlock>
+          <FieldBlock label={t("config.summaryLabel")}>
+            <Textarea value={(cfg.summary as string) ?? ""} onChange={(e) => set({ summary: e.target.value })} className="min-h-16 bg-muted text-foreground" />
+          </FieldBlock>
+          <FieldBlock label={t("config.agentLabel")}>
+            <AgentSelect value={(cfg.assign_agent_id as string) ?? ""} onChange={(v) => set({ assign_agent_id: v })} t={t} />
+          </FieldBlock>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch checked={cfg.pause_ai !== false} onCheckedChange={(v) => set({ pause_ai: !!v })} />
+            {t("config.pauseAiLabel")}
+          </label>
+        </>
+      )
+    case "send_telegram":
+      return (
+        <>
+          <FieldBlock label={t("config.telegramConnectionLabel")}>
+            <Input value={(cfg.connection_id as string) ?? ""} onChange={(e) => set({ connection_id: e.target.value })} className="bg-muted text-foreground" />
+          </FieldBlock>
+          <FieldBlock label={t("config.telegramChatLabel")}>
+            <Input value={(cfg.chat_id as string) ?? ""} onChange={(e) => set({ chat_id: e.target.value })} className="bg-muted text-foreground" />
+          </FieldBlock>
+          <FieldBlock label={t("config.messageText")}>
+            <Textarea value={(cfg.text as string) ?? ""} onChange={(e) => set({ text: e.target.value })} className="min-h-20 bg-muted text-foreground" />
+          </FieldBlock>
+        </>
+      )
+    case "start_flow":
+      return (
+        <FieldBlock label={t("config.flowIdLabel")}>
+          <Input value={(cfg.flow_id as string) ?? ""} onChange={(e) => set({ flow_id: e.target.value })} className="bg-muted text-foreground" />
+        </FieldBlock>
+      )
     case "send_webhook":
       return (
         <>
