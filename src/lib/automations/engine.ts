@@ -512,6 +512,21 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
       return 'deal created'
     }
+    case 'send_telegram': {
+      const cfg = step.step_config as SendTelegramStepConfig
+      if (!cfg.connection_id) throw new Error('send_telegram needs connection_id')
+      const text = interpolate(cfg.text ?? '', args).trim()
+      if (!text) throw new Error('send_telegram has empty text')
+      const sent = await sendTelegramMessage({
+        db,
+        accountId: args.automation.account_id,
+        connectionId: cfg.connection_id,
+        chatId: cfg.chat_id ? interpolate(cfg.chat_id, args) : undefined,
+        text,
+        parseMode: cfg.parse_mode ?? null,
+      })
+      return `Telegram sent (${sent.message_id})`
+    }
     case 'human_handoff': {
       const cfg = step.step_config as HumanHandoffStepConfig
       if (!args.contactId) throw new Error('human_handoff needs a contact')
