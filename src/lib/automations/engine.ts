@@ -512,6 +512,21 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
       return 'deal created'
     }
+    case 'emit_business_event': {
+      const cfg = step.step_config as EmitBusinessEventStepConfig
+      if (!cfg.event_type?.trim()) throw new Error('emit_business_event needs event_type')
+      let payload: Record<string, unknown> = {}
+      if (cfg.payload_template?.trim()) {
+        const rendered = interpolate(cfg.payload_template, args)
+        const parsed = JSON.parse(rendered)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('emit_business_event payload must be a JSON object')
+        }
+        payload = parsed as Record<string, unknown>
+      }
+      const event = await emitAndDispatchBusinessEvent(args, cfg.event_type.trim(), payload)
+      return `business event ${event.event_type} emitted (${event.id})`
+    }
     case 'send_webhook': {
       const cfg = step.step_config as SendWebhookStepConfig
       if (!cfg.url) throw new Error('send_webhook needs url')
