@@ -45,6 +45,7 @@ import {
   classifyAutomationMessage,
   classificationVars,
 } from "@/lib/automations/ai-classification";
+import { persistBusinessEvent } from "@/lib/automations/business-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import {
   type CollectInputNodeConfig,
@@ -476,20 +477,45 @@ async function executeHandoff(
   node: FlowNodeRow,
 ): Promise<void> {
   const cfg = node.config as { assign_to?: string; note?: string };
+  const note = cfg.note ? interpolateVars(cfg.note, run.vars) : "";
+  const summary =
+    note ||
+    String(run.vars.ai_summary ?? run.vars.ai_reason ?? "Human assistance requested");
   const convUpdate: Record<string, unknown> = {
     status: "pending",
     updated_at: new Date().toISOString(),
+    ai_autoreply_disabled: true,
+    ai_handoff_summary: summary,
   };
   if (cfg.assign_to) convUpdate.assigned_agent_id = cfg.assign_to;
   if (run.conversation_id) {
     await db
       .from("conversations")
       .update(convUpdate)
-      .eq("id", run.conversation_id);
+      .eq("id", run.conversation_id)
+      .eq("account_id", run.account_id);
   }
+  const event = await persistBusinessEvent(db, {
+    accountId: run.account_id,
+    userId: run.user_id,
+    eventType: "human_handoff_requested",
+    contactId: run.contact_id,
+    conversationId: run.conversation_id,
+    source: "flow",
+    payload: {
+      reason: "flow_handoff",
+      summary,
+      assigned_agent_id: cfg.assign_to ?? null,
+      flow_id: run.flow_id,
+      flow_run_id: run.id,
+      ai_primary_intent: run.vars.ai_primary_intent ?? null,
+      ai_confidence: run.vars.ai_confidence ?? null,
+    },
+  });
   await logEvent(db, run.id, "handoff", node.node_key, {
-    note: cfg.note ?? null,
+    note: note || null,
     assigned_to: cfg.assign_to ?? null,
+    business_event_id: event.id,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
 }
@@ -1135,14 +1161,38 @@ async function handleReplyForActiveRun(
     return { consumed: true, flow_run_id: run.id, outcome: "fallback_fired" };
   }
   if (action.type === "handoff") {
+    const summary = String(
+      run.vars.ai_summary ?? run.vars.ai_reason ?? "Flow fallback requires human assistance",
+    );
     if (run.conversation_id) {
       await db
         .from("conversations")
-        .update({ status: "pending", updated_at: new Date().toISOString() })
-        .eq("id", run.conversation_id);
+        .update({
+          status: "pending",
+          updated_at: new Date().toISOString(),
+          ai_autoreply_disabled: true,
+          ai_handoff_summary: summary,
+        })
+        .eq("id", run.conversation_id)
+        .eq("account_id", run.account_id);
     }
+    const event = await persistBusinessEvent(db, {
+      accountId: run.account_id,
+      userId: run.user_id,
+      eventType: "human_handoff_requested",
+      contactId: run.contact_id,
+      conversationId: run.conversation_id,
+      source: "flow",
+      payload: {
+        reason: "fallback_exhausted",
+        summary,
+        flow_id: run.flow_id,
+        flow_run_id: run.id,
+      },
+    });
     await logEvent(db, run.id, "handoff", run.current_node_key, {
       reason: "fallback_exhausted",
+      business_event_id: event.id,
     });
     await endRun(db, run.id, "handed_off", "fallback_exhausted");
     return { consumed: true, flow_run_id: run.id, outcome: "handed_off" };
