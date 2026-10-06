@@ -184,6 +184,17 @@ export function NodeConfigForm({
         />
       );
 
+    case "ai_decision":
+      return (
+        <AiDecisionForm
+          cfg={cfg as AiDecisionCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
     case "set_tag":
       return (
         <SetTagForm
@@ -1058,6 +1069,89 @@ function SendMediaForm({
         currentKey={currentKey}
         onChange={(v) => onUpdateConfig({ next_node_key: v })}
         label={t("advanceAfterSending")}
+      />
+    </>
+  );
+}
+
+
+// ============================================================
+// ai_decision
+// ============================================================
+
+interface AiDecisionCfg {
+  instruction?: string;
+  input_var?: string;
+  context_messages?: number;
+  next_node_key?: string;
+}
+
+function AiDecisionForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: AiDecisionCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  return (
+    <>
+      <TextRow
+        label={t("aiInstruction")}
+        value={cfg.instruction ?? ""}
+        onChange={(v) => onUpdateConfig({ instruction: v })}
+        rows={3}
+      />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">
+            {t("aiInputVar")}
+          </label>
+          <Input
+            value={cfg.input_var ?? "_last_inbound_text"}
+            onChange={(e) =>
+              onUpdateConfig({
+                input_var: e.target.value.replace(/[^a-zA-Z0-9_]/g, ""),
+              })
+            }
+            className="bg-muted font-mono text-xs"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">
+            {t("aiContextMessages")}
+          </label>
+          <Input
+            type="number"
+            min={1}
+            max={20}
+            value={cfg.context_messages ?? 8}
+            onChange={(e) =>
+              onUpdateConfig({
+                context_messages: Math.min(
+                  20,
+                  Math.max(1, Number(e.target.value) || 1),
+                ),
+              })
+            }
+            className="bg-muted text-xs"
+          />
+        </div>
+      </div>
+      <p className="text-[10px] leading-relaxed text-muted-foreground">
+        {t("aiDecisionHelp")}
+      </p>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("advancesTo")}
       />
     </>
   );
