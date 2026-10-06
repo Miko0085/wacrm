@@ -173,6 +173,17 @@ export interface SetTagNodeConfig {
   next_node_key: string;
 }
 
+export interface AiDecisionNodeConfig {
+  /** Extra business-specific instruction layered onto the shared AI Decision prompt. */
+  instruction?: string;
+  /** flow_runs.vars key containing the text to classify. Defaults to _last_inbound_text. */
+  input_var?: string;
+  /** Number of recent conversation messages available to the classifier. */
+  context_messages?: number;
+  /** Auto-advance target after storing ai_* vars. */
+  next_node_key: string;
+}
+
 // Terminal nodes carry no config — they just stop the run.
 export type EndNodeConfig = Record<string, never>;
 
@@ -193,6 +204,7 @@ export type FlowNodeConfig =
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
+  | { node_type: "ai_decision"; config: AiDecisionNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
   | { node_type: "end"; config: EndNodeConfig };
 
