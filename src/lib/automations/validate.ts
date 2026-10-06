@@ -188,6 +188,29 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
         })
       }
       break
+    case 'emit_business_event':
+      if (!nonEmpty(c.event_type)) {
+        issues.push({ path: `${path}.event_type`, message: 'business event type is required' })
+      }
+      break
+    case 'human_handoff':
+      if (c.pause_ai != null && typeof c.pause_ai !== 'boolean') {
+        issues.push({ path: `${path}.pause_ai`, message: 'pause_ai must be boolean' })
+      }
+      break
+    case 'send_telegram':
+      if (!nonEmpty(c.connection_id)) {
+        issues.push({ path: `${path}.connection_id`, message: 'Telegram connection is required' })
+      }
+      if (!nonEmpty(c.text)) {
+        issues.push({ path: `${path}.text`, message: 'Telegram text is required' })
+      }
+      break
+    case 'start_flow':
+      if (!nonEmpty(c.flow_id)) {
+        issues.push({ path: `${path}.flow_id`, message: 'flow_id is required' })
+      }
+      break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
         issues.push({ path: `${path}.url`, message: 'webhook URL is required' })
