@@ -188,6 +188,14 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
         })
       }
       break
+    case 'emit_business_event':
+      if (!nonEmpty(c.event_type)) {
+        issues.push({ path: `${path}.event_type`, message: 'business event type is required' })
+      }
+      if (c.payload_template !== undefined && typeof c.payload_template !== 'string') {
+        issues.push({ path: `${path}.payload_template`, message: 'business event payload must be JSON text' })
+      }
+      break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
         issues.push({ path: `${path}.url`, message: 'webhook URL is required' })
