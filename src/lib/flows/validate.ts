@@ -584,6 +584,65 @@ function validateNode(
       break;
     }
 
+    case "ai_decision": {
+      const cfg = node.config as {
+        instruction?: string;
+        input_var?: string;
+        context_messages?: number;
+        next_node_key?: string;
+      };
+      if (!cfg.instruction?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "instruction",
+          message: "AI Decision needs an instruction.",
+        });
+      }
+      if (!cfg.input_var?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "input_var",
+          message: "AI Decision needs an input variable.",
+        });
+      }
+      if (
+        cfg.context_messages !== undefined &&
+        (!Number.isInteger(cfg.context_messages) ||
+          cfg.context_messages < 1 ||
+          cfg.context_messages > 20)
+      ) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "context_messages",
+          message: "AI Decision context must be between 1 and 20 messages.",
+        });
+      }
+      if (!cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "AI Decision must point to a next node.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `AI Decision points to non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
     case "condition": {
       const cfg = node.config as {
         subject?: "var" | "tag" | "contact_field";
@@ -751,6 +810,7 @@ function outgoingEdges(node: NodeInput): string[] {
     case "send_message":
     case "send_media":
     case "collect_input":
+    case "ai_decision":
     case "set_tag": {
       const cfg = node.config as { next_node_key?: string };
       return cfg.next_node_key ? [cfg.next_node_key] : [];
