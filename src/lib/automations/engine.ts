@@ -10,6 +10,7 @@ import type {
   BusinessEventTriggerConfig,
   EmitBusinessEventStepConfig,
   SendTelegramStepConfig,
+  StartFlowStepConfig,
   TagTriggerConfig,
   SendMessageStepConfig,
   SendButtonsStepConfig,
@@ -554,6 +555,20 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
 
       return `business event ${eventType} emitted (${recorded.id})`
+    }
+    case 'start_flow': {
+      const cfg = step.step_config as StartFlowStepConfig
+      if (!args.contactId) throw new Error('start_flow needs a contact')
+      if (!cfg.flow_id) throw new Error('start_flow needs flow_id')
+      const conversationId = await resolveConversationId(args)
+      const { startFlowForContact } = await import('@/lib/flows/engine')
+      const result = await startFlowForContact({
+        accountId: args.automation.account_id,
+        flowId: cfg.flow_id,
+        contactId: args.contactId,
+        conversationId,
+      })
+      return `flow started: ${result.flow_run_id ?? result.outcome ?? 'unknown'}`
     }
     case 'send_telegram': {
       const cfg = step.step_config as SendTelegramStepConfig
