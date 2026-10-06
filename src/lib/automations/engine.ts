@@ -7,6 +7,8 @@ import type {
   AiClassificationStepConfig,
   KeywordMatchTriggerConfig,
   InteractiveReplyTriggerConfig,
+  BusinessEventTriggerConfig,
+  EmitBusinessEventStepConfig,
   TagTriggerConfig,
   SendMessageStepConfig,
   SendButtonsStepConfig,
@@ -27,6 +29,7 @@ import { engineSendText, engineSendTemplate, engineSendInteractive } from './met
 import { engineSendMedia } from '@/lib/flows/meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import { recordBusinessEvent } from '@/lib/business-events/record'
 import {
   classifyAutomationMessage,
   classificationTakesYesBranch,
@@ -40,6 +43,9 @@ export interface AutomationContext {
   tag_id?: string
   agent_id?: string
   interactive_reply_id?: string
+  business_event_id?: string
+  business_event_type?: string
+  business_event_payload?: Record<string, unknown>
 }
 
 export interface DispatchInput {
@@ -501,6 +507,52 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       })
       return 'deal created'
     }
+    case 'emit_business_event': {
+      const cfg = step.step_config as EmitBusinessEventStepConfig
+      const eventType = interpolate(cfg.event_type ?? '', args).trim()
+      if (!eventType) throw new Error('emit_business_event needs event_type')
+
+      const depth = Number(args.context.vars?._business_event_depth ?? 0)
+      if (depth >= 5) throw new Error('business event recursion limit reached')
+
+      let payload: Record<string, unknown> = {}
+      if (cfg.payload_template?.trim()) {
+        const rendered = interpolate(cfg.payload_template, args)
+        const parsed = JSON.parse(rendered)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('business event payload must render to a JSON object')
+        }
+        payload = parsed as Record<string, unknown>
+      }
+
+      const recorded = await recordBusinessEvent(db, {
+        accountId: args.automation.account_id,
+        userId: args.automation.user_id,
+        contactId: args.contactId,
+        conversationId: args.context.conversation_id ?? null,
+        eventType,
+        source: cfg.source ? interpolate(cfg.source, args) : 'automation',
+        payload,
+      })
+
+      await runAutomationsForTrigger({
+        accountId: args.automation.account_id,
+        triggerType: 'business_event',
+        contactId: args.contactId,
+        context: {
+          ...args.context,
+          business_event_id: recorded.id,
+          business_event_type: eventType,
+          business_event_payload: payload,
+          vars: {
+            ...(args.context.vars ?? {}),
+            _business_event_depth: depth + 1,
+          },
+        },
+      })
+
+      return `business event ${eventType} emitted (${recorded.id})`
+    }
     case 'send_webhook': {
       const cfg = step.step_config as SendWebhookStepConfig
       if (!cfg.url) throw new Error('send_webhook needs url')
@@ -573,6 +625,15 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
     const replyId = ctx?.interactive_reply_id
     if (!replyId || !Array.isArray(cfg?.reply_ids) || cfg.reply_ids.length === 0) return false
     return cfg.reply_ids.includes(replyId)
+  }
+  if (automation.trigger_type === 'business_event') {
+    const cfg = automation.trigger_config as BusinessEventTriggerConfig
+    const eventType = ctx?.business_event_type
+    return Boolean(
+      eventType &&
+      Array.isArray(cfg?.event_types) &&
+      cfg.event_types.includes(eventType),
+    )
   }
   if (automation.trigger_type === 'tag_added') {
     const cfg = automation.trigger_config as TagTriggerConfig
