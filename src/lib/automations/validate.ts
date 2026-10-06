@@ -196,6 +196,20 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
         issues.push({ path: `${path}.payload_template`, message: 'business event payload must be JSON text' })
       }
       break
+    case 'send_telegram':
+      if (!nonEmpty(c.connection_id)) {
+        issues.push({ path: `${path}.connection_id`, message: 'Telegram connection is required' })
+      }
+      if (!nonEmpty(c.message)) {
+        issues.push({ path: `${path}.message`, message: 'Telegram message is required' })
+      }
+      if (
+        c.parse_mode !== undefined &&
+        !['HTML', 'Markdown', 'MarkdownV2'].includes(String(c.parse_mode))
+      ) {
+        issues.push({ path: `${path}.parse_mode`, message: 'Telegram parse mode is invalid' })
+      }
+      break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
         issues.push({ path: `${path}.url`, message: 'webhook URL is required' })
