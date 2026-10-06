@@ -37,7 +37,7 @@ import {
   classificationTakesYesBranch,
   classificationVars,
 } from './ai-classification'
-import { persistBusinessEvent } from './business-events'
+import { markBusinessEventDispatched, persistBusinessEvent } from './business-events'
 import { sendTelegramMessage } from '@/lib/integrations/telegram'
 import { startFlowById } from '@/lib/flows/engine'
 
@@ -661,6 +661,8 @@ async function emitAndDispatchBusinessEvent(
       },
     },
   })
+
+  await markBusinessEventDispatched(supabaseAdmin(), event.id)
 
   return event
 }
