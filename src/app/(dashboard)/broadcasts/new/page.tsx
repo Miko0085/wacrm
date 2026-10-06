@@ -48,7 +48,12 @@ export default function NewBroadcastPage() {
   const source = searchParams.get('source');
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
-  const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSendingWithSmartLists();
+  const {
+    createAndSendBroadcast,
+    createScheduledBroadcast,
+    isProcessing,
+    progress,
+  } = useBroadcastSendingWithSmartLists();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
@@ -196,6 +201,60 @@ export default function NewBroadcastPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Broadcast failed';
       console.error('Broadcast failed:', err);
+      toast.error(message);
+    }
+  }
+
+  async function handleSchedule(scheduledAt: string) {
+    if (!template) return;
+
+    try {
+      const broadcastId = await createScheduledBroadcast(
+        {
+          name,
+          template,
+          audience:
+            audience.type === 'smart_list'
+              ? {
+                  type: 'smart_list',
+                  smartListId: audience.smartListId!,
+                  smartListName: audience.smartListName,
+                }
+              : {
+                  type: audience.type,
+                  tagIds: audience.tagIds,
+                  customField: audience.customField,
+                  csvContacts: audience.csvContacts,
+                  excludeTagIds: audience.excludeTagIds,
+                },
+          variables,
+          headerMediaUrl,
+        },
+        scheduledAt,
+      );
+
+      if (draftId && accountId) {
+        const supabase = createClient();
+        await supabase
+          .from('broadcasts')
+          .delete()
+          .eq('id', draftId)
+          .eq('account_id', accountId)
+          .eq('status', 'draft');
+      }
+
+      if (source === 'contacts') {
+        window.sessionStorage.removeItem(CONTACT_BROADCAST_SELECTION_KEY);
+      }
+
+      toast.success(
+        `Broadcast scheduled for ${new Date(scheduledAt).toLocaleString()}`,
+      );
+      router.push(`/broadcasts/${broadcastId}`);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to schedule broadcast';
+      console.error('Broadcast scheduling failed:', err);
       toast.error(message);
     }
   }
@@ -374,6 +433,7 @@ export default function NewBroadcastPage() {
               template={template}
               audience={audience}
               onSend={handleSend}
+              onSchedule={handleSchedule}
               onSaveDraft={handleSaveDraft}
               onBack={() => setCurrentStep(2)}
               isProcessing={isProcessing}
