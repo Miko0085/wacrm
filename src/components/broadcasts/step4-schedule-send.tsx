@@ -14,7 +14,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
+import { ArrowLeft, Send, Loader2, Users, Save, CalendarClock } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/hooks/use-auth';
 
@@ -38,6 +38,7 @@ interface Step4Props {
   template: MessageTemplate;
   audience: AudienceConfig;
   onSend: () => void;
+  onSchedule: (scheduledAt: string) => void;
   onSaveDraft?: () => void;
   onBack: () => void;
   isProcessing: boolean;
@@ -50,6 +51,7 @@ export function Step4ScheduleSend({
   template,
   audience,
   onSend,
+  onSchedule,
   onSaveDraft,
   onBack,
   isProcessing,
@@ -58,6 +60,8 @@ export function Step4ScheduleSend({
   const t = useTranslations('Broadcasts.wizard');
   const { accountId } = useAuth();
   const [showConfirm, setShowConfirm] = useState(false);
+  const [deliveryMode, setDeliveryMode] = useState<'now' | 'scheduled'>('now');
+  const [scheduledLocal, setScheduledLocal] = useState('');
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
 
@@ -161,6 +165,22 @@ export function Step4ScheduleSend({
     };
   }, [audience, accountId]);
 
+  const browserTimezone =
+    typeof Intl !== 'undefined'
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : 'Local time';
+
+  const scheduledDate = scheduledLocal ? new Date(scheduledLocal) : null;
+  const scheduleValid =
+    Boolean(scheduledDate) &&
+    !Number.isNaN(scheduledDate!.getTime()) &&
+    scheduledDate!.getTime() >= Date.now() + 60_000;
+
+  function submitSchedule() {
+    if (!scheduledDate || !scheduleValid) return;
+    onSchedule(scheduledDate.toISOString());
+  }
+
   const audienceLabel =
     audience.type === 'smart_list'
       ? `Smart List${audience.smartListName ? ` · ${audience.smartListName}` : ''}`
@@ -220,6 +240,59 @@ export function Step4ScheduleSend({
         </div>
       </div>
 
+      <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Delivery timing</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Send immediately or schedule this broadcast for a specific date and time.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={deliveryMode === 'now' ? 'default' : 'outline'}
+            onClick={() => setDeliveryMode('now')}
+            disabled={isProcessing}
+          >
+            <Send className="h-4 w-4" />
+            Send now
+          </Button>
+          <Button
+            type="button"
+            variant={deliveryMode === 'scheduled' ? 'default' : 'outline'}
+            onClick={() => setDeliveryMode('scheduled')}
+            disabled={isProcessing}
+          >
+            <CalendarClock className="h-4 w-4" />
+            Schedule
+          </Button>
+        </div>
+
+        {deliveryMode === 'scheduled' && (
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-foreground">
+              Date & time
+            </label>
+            <Input
+              type="datetime-local"
+              value={scheduledLocal}
+              onChange={(event) => setScheduledLocal(event.target.value)}
+              min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+              className="border-border bg-muted text-foreground"
+            />
+            <p className="text-xs text-muted-foreground">
+              Timezone: {browserTimezone}. The exact moment is stored in UTC.
+            </p>
+            {scheduledLocal && !scheduleValid && (
+              <p className="text-xs text-red-400">
+                Choose a time at least 1 minute in the future.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       {isProcessing && (
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -262,6 +335,16 @@ export function Step4ScheduleSend({
             </Button>
           )}
 
+          {deliveryMode === 'scheduled' ? (
+            <Button
+              onClick={submitSchedule}
+              disabled={!name.trim() || isProcessing || estimatedReach === 0 || !scheduleValid}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              <CalendarClock className="h-4 w-4" />
+              Schedule Broadcast
+            </Button>
+          ) : (
           <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
             <DialogTrigger
               render={
@@ -306,6 +389,7 @@ export function Step4ScheduleSend({
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          )}
         </div>
       </div>
     </div>
