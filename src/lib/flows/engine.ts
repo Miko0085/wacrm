@@ -969,7 +969,7 @@ export async function startFlowForContact(args: {
 
   const flow = flowData as FlowRow;
   if (!flow.entry_node_id) throw new Error("Flow has no entry node");
-  if (flow.status === "archived") throw new Error("Archived flow cannot be started");
+  if (flow.status !== "active") throw new Error("Only active flows can be started");
 
   const existing = await loadActiveRunForContact(db, args.accountId, args.contactId);
   if (existing) {
