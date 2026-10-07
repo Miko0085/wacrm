@@ -17,7 +17,10 @@ vi.mock('./meta-send', () => ({
 }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendMedia: h.engineSendMedia }))
 vi.mock('@/lib/flows/engine', () => ({ startFlowForContact: h.startFlowForContact }))
-vi.mock('@/lib/telegram/send', () => ({ sendTelegramNotification: h.sendTelegram }))
+vi.mock('@/lib/telegram/send', async (orig) => ({
+  ...(await orig<typeof import('@/lib/telegram/send')>()),
+  sendTelegramNotification: h.sendTelegram,
+}))
 vi.mock('@/lib/webhooks/ssrf', () => ({ isDeliverableUrl: vi.fn(async () => true) }))
 vi.mock('@/lib/contacts/tag-write', () => ({ addContactTagIfAbsent: vi.fn(async () => false) }))
 vi.mock('./ai-classification', () => ({
@@ -260,5 +263,44 @@ describe('emit_business_event — chain depth loop protection', () => {
       fake.tables.business_events.length = 0
     }
     expect(hops).toBeLessThanOrEqual(MAX_BUSINESS_EVENT_CHAIN_DEPTH + 1)
+  })
+})
+
+describe('send_telegram step — customer text can never inject markup', () => {
+  const tgStep = (cfg: Record<string, unknown>) =>
+    step({
+      step_type: 'send_telegram',
+      step_config: { connection_id: 'tg-1', message: 'Reason: {{event.reason}}', ...cfg },
+    })
+  const eventCtx: AutomationContext = {
+    business_event_id: 'ev-1',
+    business_event_type: 'human_handoff_requested',
+    business_event_payload: { reason: '<b>Call me</b> & *now*' },
+  }
+  const triggerEvent = { trigger_type: 'business_event', trigger_config: { event_types: ['human_handoff_requested'] } }
+
+  it('defaults to plain text (parseMode null) and sends the value verbatim', async () => {
+    h.db = seed([automation(triggerEvent)], [tgStep({})])
+    await dispatch('business_event', eventCtx)
+    expect(h.sendTelegram).toHaveBeenCalledWith(
+      expect.objectContaining({ parseMode: null, text: 'Reason: <b>Call me</b> & *now*' }),
+    )
+  })
+
+  it('HTML mode escapes interpolated values but not the author template', async () => {
+    h.db = seed([automation(triggerEvent)], [tgStep({ parse_mode: 'HTML', message: '<b>Handoff</b>: {{event.reason}}' })])
+    await dispatch('business_event', eventCtx)
+    expect(h.sendTelegram).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parseMode: 'HTML',
+        text: '<b>Handoff</b>: &lt;b&gt;Call me&lt;/b&gt; &amp; *now*',
+      }),
+    )
+  })
+
+  it('MarkdownV2 mode escapes reserved characters in values', async () => {
+    h.db = seed([automation(triggerEvent)], [tgStep({ parse_mode: 'MarkdownV2' })])
+    await dispatch('business_event', eventCtx)
+    expect(h.sendTelegram.mock.calls[0][0].text).toBe('Reason: <b\\>Call me</b\\> & \\*now\\*')
   })
 })

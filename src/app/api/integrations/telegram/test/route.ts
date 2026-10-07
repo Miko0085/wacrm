@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { sendTelegramNotification } from '@/lib/telegram/send'
+import { TelegramError, sendTelegramNotification } from '@/lib/telegram/send'
 
+/**
+ * Status codes (the body only ever carries our own fixed message):
+ *   400 bad input / connection config / Telegram rejected chat_id
+ *   401 Telegram rejected the bot token      403 bot not allowed in that chat
+ *   429 Telegram rate limit                  502 Telegram unavailable / unreachable
+ *   504 Telegram timed out
+ * App-level auth failures keep their own 401/403 via toErrorResponse.
+ */
 export async function POST(request: Request) {
   try {
     const { supabase, accountId } = await requireRole('admin')
@@ -20,8 +28,16 @@ export async function POST(request: Request) {
     })
     return NextResponse.json({ ok: true, message_id: messageId })
   } catch (err) {
-    if (err instanceof Error) {
-      return NextResponse.json({ error: err.message }, { status: 400 })
+    if (err instanceof TelegramError) {
+      return NextResponse.json(
+        { error: err.message, kind: err.kind },
+        {
+          status: err.httpStatus,
+          headers: err.retryAfterSeconds
+            ? { 'Retry-After': String(err.retryAfterSeconds) }
+            : undefined,
+        },
+      )
     }
     return toErrorResponse(err)
   }

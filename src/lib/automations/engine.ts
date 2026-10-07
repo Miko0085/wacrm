@@ -32,7 +32,7 @@ import { engineSendMedia } from '@/lib/flows/meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { recordBusinessEvent } from '@/lib/business-events/record'
-import { sendTelegramNotification } from '@/lib/telegram/send'
+import { escapeTelegramText, sendTelegramNotification } from '@/lib/telegram/send'
 import {
   classifyAutomationMessage,
   classificationTakesYesBranch,
@@ -688,7 +688,14 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'send_telegram': {
       const cfg = step.step_config as SendTelegramStepConfig
       if (!cfg.connection_id) throw new Error('send_telegram needs connection_id')
-      const message = interpolate(cfg.message ?? '', args)
+      // Customer-controlled values (event.summary, message.text, ...) are
+      // escaped for the chosen parse mode so they can never inject markup.
+      const parseMode = cfg.parse_mode ?? null
+      const message = interpolateTemplate(
+        cfg.message ?? '',
+        { contactId: args.contactId, context: args.context },
+        (value) => escapeTelegramText(parseMode, value),
+      )
       if (!message.trim()) throw new Error('send_telegram has empty message')
       const messageId = await sendTelegramNotification({
         db,
@@ -696,7 +703,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         connectionId: cfg.connection_id,
         chatId: cfg.chat_id ? interpolate(cfg.chat_id, args) : undefined,
         text: message,
-        parseMode: cfg.parse_mode,
+        parseMode,
       })
       return `Telegram message sent (${messageId})`
     }
@@ -873,7 +880,12 @@ function resolveTemplateRef(
  * Raw substitution breaks a JSON body as soon as a customer message contains a
  * quote, backslash or newline; the json. form always yields valid JSON.
  */
-export function interpolateTemplate(s: string, scope: InterpolationScope): string {
+export function interpolateTemplate(
+  s: string,
+  scope: InterpolationScope,
+  /** Applied to every raw (non-json) substituted VALUE, never to the template. */
+  escapeValue?: (value: string) => string,
+): string {
   return s.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
     const [ns, ...rest] = String(key).split('.')
     if (ns === 'json') {
@@ -883,9 +895,11 @@ export function interpolateTemplate(s: string, scope: InterpolationScope): strin
       return JSON.stringify(value === undefined ? '' : value) ?? 'null'
     }
     const value = resolveTemplateRef(ns, rest[0], scope)
-    return typeof value === 'object' && value !== null
-      ? JSON.stringify(value)
-      : String(value ?? '')
+    const text =
+      typeof value === 'object' && value !== null
+        ? JSON.stringify(value)
+        : String(value ?? '')
+    return escapeValue ? escapeValue(text) : text
   })
 }
 

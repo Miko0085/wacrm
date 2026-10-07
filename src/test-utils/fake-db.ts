@@ -73,6 +73,7 @@ class Builder implements PromiseLike<{ data: unknown; error: unknown; count?: nu
   private returning = false
   private singleMode: 'one' | 'maybe' | null = null
   private head = false
+  private cols: string[] | null = null
 
   constructor(
     private db: FakeDb,
@@ -80,11 +81,16 @@ class Builder implements PromiseLike<{ data: unknown; error: unknown; count?: nu
     private opts: FakeDbOptions,
   ) {}
 
-  select(_cols?: string, options?: { count?: string; head?: boolean }) {
+  select(cols?: string, options?: { count?: string; head?: boolean }) {
     if (this.kind === 'select') {
       this.head = Boolean(options?.head)
     } else {
       this.returning = true
+    }
+    // Honour a plain column list like PostgREST does, so tests can prove a
+    // route never selects secrets. Embeds / '*' return whole rows.
+    if (cols && cols.trim() !== '*' && !/[()!]/.test(cols)) {
+      this.cols = cols.split(',').map((c) => c.trim()).filter(Boolean)
     }
     return this
   }
@@ -202,7 +208,13 @@ class Builder implements PromiseLike<{ data: unknown; error: unknown; count?: nu
   }
 
   private shape(rows: Row[]) {
-    const out = this.kind === 'select' || this.returning ? rows.map((r) => ({ ...r })) : null
+    const project = (r: Row): Row => {
+      if (!this.cols) return { ...r }
+      const out: Row = {}
+      for (const c of this.cols) if (c in r) out[c] = r[c]
+      return out
+    }
+    const out = this.kind === 'select' || this.returning ? rows.map(project) : null
     if (this.singleMode) {
       if (!out || out.length === 0) {
         return this.singleMode === 'one'

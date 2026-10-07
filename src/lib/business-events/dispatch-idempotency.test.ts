@@ -12,7 +12,10 @@ vi.mock('@/lib/automations/meta-send', () => ({
   engineSendInteractive: vi.fn(),
 }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendMedia: vi.fn() }))
-vi.mock('@/lib/telegram/send', () => ({ sendTelegramNotification: h.sendTelegram }))
+vi.mock('@/lib/telegram/send', async (orig) => ({
+  ...(await orig<typeof import('@/lib/telegram/send')>()),
+  sendTelegramNotification: h.sendTelegram,
+}))
 vi.mock('@/lib/webhooks/ssrf', () => ({ isDeliverableUrl: vi.fn(async () => true) }))
 vi.mock('@/lib/contacts/tag-write', () => ({ addContactTagIfAbsent: vi.fn() }))
 vi.mock('@/lib/automations/ai-classification', () => ({
