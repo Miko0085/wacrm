@@ -1,0 +1,29 @@
+name: Lockfile React Hooks Compatibility
+
+on:
+  push:
+    branches: ['feature/wacrm-smart-lists']
+    paths:
+      - '.github/workflows/lockfile-react-hooks.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - name: Pin compatible React hooks lint plugin
+        run: npm install --package-lock-only --save-exact --save-dev eslint-plugin-react-hooks@7.0.1
+      - name: Commit manifests
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore: pin compatible React hooks lint plugin"
+          git push origin HEAD:feature/wacrm-smart-lists
