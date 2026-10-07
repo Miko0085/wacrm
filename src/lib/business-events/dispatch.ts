@@ -43,7 +43,7 @@ export async function drainBusinessEvents(
     .from('business_events')
     .select('id')
     .eq('dispatch_status', 'running')
-    .lt('locked_at', staleBefore)
+    .or(`locked_at.is.null,locked_at.lt.${staleBefore}`)
     .limit(limit)
 
   if (staleError) throw staleError
