@@ -361,7 +361,7 @@ async function ensureFlow(userId) {
     if (existing) {
       await db
         .from('flows')
-        .update({ status: previousStatus, ...existing })
+        .update({ status: previousStatus })
         .eq('id', flowId)
     }
     throw err
