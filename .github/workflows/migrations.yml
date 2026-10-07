@@ -69,3 +69,10 @@ jobs:
       # just the absence of an error.
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
+
+      # Behaviour, not just existence: debounce supersede/dead-revive
+      # semantics, outbox idempotency, retention and the managed-seed RPCs.
+      # Rolls its own fixtures back, so it is safe to run after the schema
+      # check above.
+      - name: Verify orchestration behaviour
+        run: supabase db query --local --file supabase/ci/orchestration-behavior.sql
