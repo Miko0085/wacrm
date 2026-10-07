@@ -8,6 +8,8 @@ export interface BusinessEventInput {
   eventType: string
   source?: string
   payload?: Record<string, unknown>
+  /** Automation->event chain depth; 0 (default) for root events. */
+  chainDepth?: number
 }
 
 export async function recordBusinessEvent(
@@ -35,6 +37,8 @@ export async function recordBusinessEvent(
       event_type: eventType,
       source,
       payload,
+      // Only sent when non-zero so root events keep working before 058 lands.
+      ...(input.chainDepth ? { chain_depth: input.chainDepth } : {}),
     })
     .select('id')
     .single()

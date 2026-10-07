@@ -721,8 +721,11 @@ export async function finishProcessingInboundMessage(
   }
   if (wasContactCreated) automationTriggers.unshift('new_contact_created')
   if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+  // Whether a deterministic responder actually tried to answer this turn;
+  // decided from the real dispatch results (see dispatchInboundToAiReply).
+  let deterministicResponderHandled = false
   for (const triggerType of automationTriggers) {
-    await runAutomationsForTrigger({
+    const dispatch = await runAutomationsForTrigger({
       accountId,
       triggerType,
       contactId: contactRecord.id,
@@ -731,7 +734,11 @@ export async function finishProcessingInboundMessage(
         conversation_id: conversation.id,
         interactive_reply_id: msg.interactiveReplyId ?? undefined,
       },
-    }).catch((err) => console.error('[inbound-pipeline] automations dispatch failed:', err))
+    }).catch((err) => {
+      console.error('[inbound-pipeline] automations dispatch failed:', err)
+      return null
+    })
+    if (dispatch?.customer_facing_attempted) deterministicResponderHandled = true
   }
 
   if (!flowConsumed && !msg.interactiveReplyId && inboundText.trim()) {
@@ -740,6 +747,7 @@ export async function finishProcessingInboundMessage(
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
+      deterministicResponderHandled,
     })
   }
 

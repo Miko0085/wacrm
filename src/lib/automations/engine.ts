@@ -49,6 +49,8 @@ export interface AutomationContext {
   business_event_id?: string
   business_event_type?: string
   business_event_payload?: Record<string, unknown>
+  /** Chain depth of the business event being dispatched (0 = root). */
+  business_event_depth?: number
 }
 
 export interface DispatchInput {
@@ -63,6 +65,30 @@ export interface AutomationDispatchResult {
   succeeded: number
   failed: number
   skipped: number
+  /**
+   * True when a matched automation reached (or scheduled) a step that talks to
+   * the customer — a send_* step or start_flow. Set at the moment the send is
+   * attempted, so it stays true even if that attempt then fails: the inbound
+   * pipeline uses it to avoid a parallel AI reply (double send).
+   */
+  customer_facing_attempted: boolean
+}
+
+/** Steps that produce, or hand off to a Flow that produces, a customer reply. */
+export const CUSTOMER_FACING_STEP_TYPES: ReadonlySet<string> = new Set([
+  'send_message',
+  'send_buttons',
+  'send_list',
+  'send_template',
+  'send_media',
+  'start_flow',
+])
+
+/** Hard stop for automation -> emit_business_event -> automation chains. */
+export const MAX_BUSINESS_EVENT_CHAIN_DEPTH = 8
+
+interface DispatchTracker {
+  customerFacing: boolean
 }
 
 export async function runAutomationsForTrigger(
@@ -73,7 +99,9 @@ export async function runAutomationsForTrigger(
     succeeded: 0,
     failed: 0,
     skipped: 0,
+    customer_facing_attempted: false,
   }
+  const tracker: DispatchTracker = { customerFacing: false }
 
   try {
     const db = supabaseAdmin()
@@ -123,7 +151,9 @@ export async function runAutomationsForTrigger(
           .select('id')
           .eq('automation_id', automation.id)
           .eq('business_event_id', input.context.business_event_id)
-          .eq('status', 'success')
+          // 'partial' = the automation is parked on a wait step; its remaining
+          // steps are already scheduled, so a retry must not start it again.
+          .in('status', ['success', 'partial'])
           .limit(1)
         if (priorError) {
           console.error('[automations] business-event idempotency lookup failed:', priorError)
@@ -137,7 +167,7 @@ export async function runAutomationsForTrigger(
       }
 
       try {
-        const ok = await executeAutomation(automation, input)
+        const ok = await executeAutomation(automation, input, tracker)
         if (ok) result.succeeded += 1
         else result.failed += 1
       } catch (err) {
@@ -150,6 +180,7 @@ export async function runAutomationsForTrigger(
     console.error('[automations] dispatch failed:', err)
   }
 
+  result.customer_facing_attempted = tracker.customerFacing
   return result
 }
 
@@ -174,7 +205,7 @@ export async function resumePendingExecution(pending: {
 
   if (error || !automation) {
     console.error('[automations] resume: missing automation', pending.automation_id, error)
-    await markPending(pending.id, 'failed')
+    await markPending(pending.id, 'failed', 'automation not found')
     return
   }
 
@@ -192,11 +223,19 @@ export async function resumePendingExecution(pending: {
     await markPending(pending.id, 'done')
   } catch (err) {
     console.error('[automations] resume failed:', err)
-    await markPending(pending.id, 'failed')
+    await markPending(
+      pending.id,
+      'failed',
+      err instanceof Error ? err.message : String(err),
+    )
   }
 }
 
-async function executeAutomation(automation: Automation, input: DispatchInput): Promise<boolean> {
+async function executeAutomation(
+  automation: Automation,
+  input: DispatchInput,
+  tracker: DispatchTracker,
+): Promise<boolean> {
   const db = supabaseAdmin()
 
   const { data: log, error: logErr } = await db
@@ -228,6 +267,7 @@ async function executeAutomation(automation: Automation, input: DispatchInput): 
     startPosition: 0,
     logId: log.id,
     triggerEvent: input.triggerType,
+    tracker,
   })
 
   const { error: rpcErr } = await db.rpc('increment_automation_execution_count', {
@@ -256,6 +296,12 @@ interface ExecuteArgs {
   startPosition: number
   logId: string | null
   triggerEvent: string
+  /** Absent for resumed waits: nothing is deciding on AI suppression then. */
+  tracker?: DispatchTracker
+}
+
+function markCustomerFacing(args: ExecuteArgs): void {
+  if (args.tracker) args.tracker.customerFacing = true
 }
 
 async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
@@ -290,6 +336,16 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
 
   for (const step of steps as AutomationStep[]) {
     if (step.step_type === 'wait') {
+      // A reply scheduled behind a wait is still a deterministic reply.
+      if (
+        (steps as AutomationStep[]).some(
+          (later) =>
+            later.position > step.position &&
+            CUSTOMER_FACING_STEP_TYPES.has(later.step_type),
+        )
+      ) {
+        markCustomerFacing(args)
+      }
       const cfg = step.step_config as WaitStepConfig
       const ms = waitMs(cfg)
       await db.from('automation_pending_executions').insert({
@@ -405,6 +461,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const text = interpolate(cfg.text, args)
       if (!text.trim()) throw new Error('send_message has empty text')
       const conversationId = await resolveConversationId(args)
+      markCustomerFacing(args)
       const { whatsapp_message_id } = await engineSendText({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -421,6 +478,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const check = validateInteractivePayload(payload)
       if (!check.ok) throw new Error(check.error)
       const conversationId = await resolveConversationId(args)
+      markCustomerFacing(args)
       const { whatsapp_message_id } = await engineSendInteractive({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -449,6 +507,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
             })
             .map((k) => String(cfg.variables![k]))
         : []
+      markCustomerFacing(args)
       const { whatsapp_message_id } = await engineSendTemplate({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -468,6 +527,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         throw new Error('send_media has invalid media_type')
       }
       const conversationId = await resolveConversationId(args)
+      markCustomerFacing(args)
       const { whatsapp_message_id } = await engineSendMedia({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -496,7 +556,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (depth >= MAX_TAG_CHAIN_DEPTH) {
         return `tag ${cfg.tag_id} added; tag_added dispatch skipped at depth ${depth}`
       }
-      await runAutomationsForTrigger({
+      const chained = await runAutomationsForTrigger({
         accountId: args.automation.account_id,
         triggerType: 'tag_added',
         contactId: args.contactId,
@@ -506,6 +566,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
           vars: { ...(args.context.vars ?? {}), _tag_chain_depth: depth + 1 },
         },
       })
+      if (chained.customer_facing_attempted) markCustomerFacing(args)
       return `tag ${cfg.tag_id} added and tag_added dispatched`
     }
     case 'remove_tag': {
@@ -586,6 +647,16 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         payload = parsed as Record<string, unknown>
       }
 
+      // Loop protection: an event emitted while handling event depth N is
+      // depth N+1; automations triggered by something else start a new chain.
+      const nextDepth = (args.context.business_event_depth ?? -1) + 1
+      if (nextDepth > MAX_BUSINESS_EVENT_CHAIN_DEPTH) {
+        console.warn(
+          `[automations] emit_business_event suppressed: chain depth ${nextDepth} exceeds ${MAX_BUSINESS_EVENT_CHAIN_DEPTH} (automation=${args.automation.id} event_type=${eventType})`,
+        )
+        return `business event ${eventType} suppressed: chain depth limit ${MAX_BUSINESS_EVENT_CHAIN_DEPTH} reached`
+      }
+
       const recorded = await recordBusinessEvent(db, {
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -594,6 +665,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         eventType,
         source: cfg.source ? interpolate(cfg.source, args) : 'automation',
         payload,
+        chainDepth: nextDepth,
       })
 
       return `business event ${eventType} queued (${recorded.id})`
@@ -603,6 +675,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('start_flow needs a contact')
       if (!cfg.flow_id) throw new Error('start_flow needs flow_id')
       const conversationId = await resolveConversationId(args)
+      markCustomerFacing(args)
       const { startFlowForContact } = await import('@/lib/flows/engine')
       const result = await startFlowForContact({
         accountId: args.automation.account_id,
@@ -767,19 +840,57 @@ function waitMs(cfg: WaitStepConfig): number {
   return Math.max(1_000, cfg.amount * unitMs)
 }
 
-function interpolate(s: string, args: ExecuteArgs): string {
+/** Values a template can reference. Kept separate from ExecuteArgs for testing. */
+export interface InterpolationScope {
+  contactId?: string | null
+  context: AutomationContext
+}
+
+function resolveTemplateRef(
+  ns: string,
+  prop: string | undefined,
+  scope: InterpolationScope,
+): unknown {
+  const ctx = scope.context
+  if (ns === 'message' && prop === 'text') return ctx.message_text ?? ''
+  if (ns === 'contact' && prop === 'id') return scope.contactId ?? ''
+  if (ns === 'conversation' && prop === 'id') return ctx.conversation_id ?? ''
+  if (ns === 'vars' && prop) return ctx.vars?.[prop] ?? ''
+  if (ns === 'event' && prop === 'id') return ctx.business_event_id ?? ''
+  if (ns === 'event' && prop === 'type') return ctx.business_event_type ?? ''
+  if (ns === 'event' && prop === 'payload') return ctx.business_event_payload ?? {}
+  if (ns === 'event' && prop) return ctx.business_event_payload?.[prop] ?? ''
+  return ''
+}
+
+/**
+ * Render `{{ns.prop}}` placeholders.
+ *
+ *   {{vars.x}}        raw text substitution (legacy behaviour, unchanged)
+ *   {{json.vars.x}}   JSON-encoded value — use it INSIDE JSON templates and do
+ *                     NOT wrap it in quotes: {"reason": {{json.event.reason}}}
+ *
+ * Raw substitution breaks a JSON body as soon as a customer message contains a
+ * quote, backslash or newline; the json. form always yields valid JSON.
+ */
+export function interpolateTemplate(s: string, scope: InterpolationScope): string {
   return s.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
-    const [ns, prop] = String(key).split('.')
-    if (ns === 'message' && prop === 'text') return String(args.context.message_text ?? '')
-    if (ns === 'contact' && prop === 'id') return String(args.contactId ?? '')
-    if (ns === 'conversation' && prop === 'id') return String(args.context.conversation_id ?? '')
-    if (ns === 'vars' && prop) return String(args.context.vars?.[prop] ?? '')
-    if (ns === 'event' && prop === 'id') return String(args.context.business_event_id ?? '')
-    if (ns === 'event' && prop === 'type') return String(args.context.business_event_type ?? '')
-    if (ns === 'event' && prop === 'payload') return JSON.stringify(args.context.business_event_payload ?? {})
-    if (ns === 'event' && prop) return String(args.context.business_event_payload?.[prop] ?? '')
-    return ''
+    const [ns, ...rest] = String(key).split('.')
+    if (ns === 'json') {
+      const [jsonNs, jsonProp] = rest
+      if (!jsonNs) return 'null'
+      const value = resolveTemplateRef(jsonNs, jsonProp, scope)
+      return JSON.stringify(value === undefined ? '' : value) ?? 'null'
+    }
+    const value = resolveTemplateRef(ns, rest[0], scope)
+    return typeof value === 'object' && value !== null
+      ? JSON.stringify(value)
+      : String(value ?? '')
   })
+}
+
+function interpolate(s: string, args: ExecuteArgs): string {
+  return interpolateTemplate(s, { contactId: args.contactId, context: args.context })
 }
 
 async function appendResults(
@@ -807,6 +918,9 @@ async function finalizeLog(
   await supabaseAdmin().from('automation_logs').update({ status, error_message: errorMessage }).eq('id', logId)
 }
 
-async function markPending(id: string, status: 'done' | 'failed') {
-  await supabaseAdmin().from('automation_pending_executions').update({ status }).eq('id', id)
+async function markPending(id: string, status: 'done' | 'failed', error?: string) {
+  await supabaseAdmin()
+    .from('automation_pending_executions')
+    .update({ status, locked_at: null, last_error: error ? error.slice(0, 500) : null })
+    .eq('id', id)
 }

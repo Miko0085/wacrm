@@ -10,8 +10,6 @@ import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { recordBusinessEvent } from '@/lib/business-events/record'
-import { triggerMatches } from '@/lib/automations/engine'
-import type { Automation } from '@/types'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -21,6 +19,15 @@ interface DispatchArgs {
   /** The account's WhatsApp config owner, used for the outbound send's
    *  audit columns (mirrors how the flow runner passes it through). */
   configOwnerUserId: string
+  /**
+   * True when this inbound turn was already answered (or a Flow was started)
+   * by a deterministic responder — an Automation that attempted a
+   * customer-facing step. The inbound pipeline derives it from the ACTUAL
+   * automation dispatch result, so tag-only / CRM-only / webhook-only
+   * automations never mute the AI, and a responder that failed after trying
+   * to send never causes a second, parallel AI reply.
+   */
+  deterministicResponderHandled?: boolean
 }
 
 /**
@@ -46,6 +53,7 @@ export async function dispatchInboundToAiReply(
   args: DispatchArgs,
 ): Promise<void> {
   const { accountId, conversationId, contactId, configOwnerUserId } = args
+  if (args.deterministicResponderHandled) return
 
   try {
     const db = supabaseAdmin()
@@ -67,49 +75,6 @@ export async function dispatchInboundToAiReply(
 
     const messages = await buildConversationContext(db, conversationId)
     if (messages.length === 0) return
-
-    // Deterministic, user-configured responders win over the LLM, but only
-    // when they actually match THIS message. Previously the mere existence of
-    // any keyword automation disabled AI auto-reply account-wide.
-    const latestText = latestUserMessage(messages)
-    const { data: autoResponders, error: respondersError } = await db
-      .from('automations')
-      .select('*')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-    if (respondersError) {
-      console.error('[ai auto-reply] responder lookup failed:', respondersError)
-      return
-    }
-    const matchedResponderIds = ((autoResponders ?? []) as Automation[])
-      .filter((automation) => triggerMatches(automation, { message_text: latestText }))
-      .map((automation) => automation.id)
-
-    if (matchedResponderIds.length > 0) {
-      // Only suppress the LLM when a matching automation can actually produce
-      // a customer-facing response (directly or by starting a Flow). Tag-only,
-      // CRM-only and logging automations must not mute AI for the whole turn.
-      const { data: responseSteps, error: responseStepsError } = await db
-        .from('automation_steps')
-        .select('id')
-        .in('automation_id', matchedResponderIds)
-        .in('step_type', [
-          'send_message',
-          'send_buttons',
-          'send_list',
-          'send_template',
-          'send_media',
-          'start_flow',
-        ])
-        .limit(1)
-
-      if (responseStepsError) {
-        console.error('[ai auto-reply] responder step lookup failed:', responseStepsError)
-        return
-      }
-      if (responseSteps && responseSteps.length > 0) return
-    }
 
     // Account-wide throttle on the shared BYO key. The per-conversation
     // cap bounds one thread; this bounds a burst across many threads (a

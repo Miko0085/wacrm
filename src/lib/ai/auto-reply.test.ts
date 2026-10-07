@@ -10,8 +10,6 @@ const h = vi.hoisted(() => ({
   engineSendText: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
-    autoResponders: [] as Record<string, unknown>[],
-    responseSteps: [] as { id: string }[],
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
@@ -28,32 +26,7 @@ vi.mock('@/lib/business-events/record', () => ({
 }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
-    from: (table: string) => {
-      if (table === 'automations') {
-        const chain = {
-          select: () => chain,
-          eq: () => chain,
-          in: () => chain,
-          then: (
-            onFulfilled: (value: unknown) => unknown,
-            onRejected?: (reason: unknown) => unknown,
-          ) =>
-            Promise.resolve({ data: h.state.autoResponders, error: null }).then(
-              onFulfilled,
-              onRejected,
-            ),
-        }
-        return chain
-      }
-      if (table === 'automation_steps') {
-        const chain = {
-          select: () => chain,
-          in: () => chain,
-          limit: () =>
-            Promise.resolve({ data: h.state.responseSteps, error: null }),
-        }
-        return chain
-      }
+    from: () => {
       // conversations
       return {
         select: () => ({
@@ -105,8 +78,6 @@ beforeEach(() => {
     ai_autoreply_disabled: false,
     ai_reply_count: 0,
   }
-  h.state.autoResponders = []
-  h.state.responseSteps = []
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
@@ -139,42 +110,21 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(systemPrompt).toContain('Returns accepted within 30 days.')
   })
 
-  it('stands down when a matching automation has a customer-facing response step', async () => {
-    h.state.autoResponders = [{
-      id: 'auto-1',
-      trigger_type: 'keyword_match',
-      trigger_config: { keywords: ['hi'], match_type: 'contains' },
-      is_active: true,
-    }]
-    h.state.responseSteps = [{ id: 'step-1' }]
-    await dispatchInboundToAiReply(ARGS)
+  it('stands down when a deterministic responder already handled this turn', async () => {
+    await dispatchInboundToAiReply({ ...ARGS, deterministicResponderHandled: true })
+    expect(h.loadAiConfig).not.toHaveBeenCalled()
     expect(h.generateReply).not.toHaveBeenCalled()
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('does not mute AI for a matching CRM-only automation', async () => {
-    h.state.autoResponders = [{
-      id: 'auto-1',
-      trigger_type: 'keyword_match',
-      trigger_config: { keywords: ['hi'], match_type: 'contains' },
-      is_active: true,
-    }]
-    h.state.responseSteps = []
-    await dispatchInboundToAiReply(ARGS)
+  it('answers when no deterministic responder handled the turn', async () => {
+    await dispatchInboundToAiReply({ ...ARGS, deterministicResponderHandled: false })
     expect(h.generateReply).toHaveBeenCalled()
     expect(h.engineSendText).toHaveBeenCalled()
   })
 
-  it('does not mute AI for a keyword automation that does not match this message', async () => {
-    h.state.autoResponders = [{
-      id: 'auto-1',
-      trigger_type: 'keyword_match',
-      trigger_config: { keywords: ['price'], match_type: 'contains' },
-      is_active: true,
-    }]
-    h.state.responseSteps = [{ id: 'step-1' }]
+  it('treats an omitted flag as "not handled" (back-compat for other callers)', async () => {
     await dispatchInboundToAiReply(ARGS)
-    expect(h.generateReply).toHaveBeenCalled()
     expect(h.engineSendText).toHaveBeenCalled()
   })
 
