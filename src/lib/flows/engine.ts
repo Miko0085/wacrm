@@ -513,20 +513,6 @@ async function executeHandoff(
     payload: eventPayload,
   });
 
-  const { runAutomationsForTrigger } = await import("@/lib/automations/engine");
-  await runAutomationsForTrigger({
-    accountId: run.account_id,
-    triggerType: "business_event",
-    contactId: run.contact_id,
-    context: {
-      conversation_id: run.conversation_id ?? undefined,
-      business_event_id: event.id,
-      business_event_type: "human_handoff_requested",
-      business_event_payload: eventPayload,
-      vars: run.vars,
-    },
-  });
-
   await logEvent(db, run.id, "handoff", node.node_key, {
     note: renderedNote || null,
     assigned_to: cfg.assign_to ?? null,
