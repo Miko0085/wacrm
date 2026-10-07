@@ -126,6 +126,16 @@ ALTER TABLE business_events
   ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS last_error TEXT;
 
+-- Rows created before this migration were already handled synchronously by the
+-- legacy runtime. Mark them delivered so deployment does not replay historical
+-- handoffs. New rows created after the migration keep the DEFAULT 'pending'.
+UPDATE business_events
+SET dispatch_status = 'dispatched',
+    dispatched_at = COALESCE(dispatched_at, created_at)
+WHERE dispatch_status = 'pending'
+  AND dispatch_attempts = 0
+  AND dispatched_at IS NULL;
+
 ALTER TABLE business_events
   DROP CONSTRAINT IF EXISTS business_events_dispatch_status_check;
 
