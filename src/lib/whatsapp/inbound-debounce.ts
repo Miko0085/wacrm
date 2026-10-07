@@ -65,21 +65,6 @@ export async function processDebouncedInboundTurn(
   const mergedText = textParts.join('\n')
   const syntheticMessageId = `debounce:${job.id}:v${job.version}`
 
-  const flowResult = await dispatchInboundToFlows({
-    accountId: job.account_id,
-    userId: job.user_id,
-    contactId: job.contact_id,
-    conversationId: job.conversation_id,
-    message: {
-      kind: 'text',
-      text: mergedText,
-      meta_message_id: syntheticMessageId,
-    },
-    isFirstInboundMessage: job.is_first_inbound,
-  })
-
-  if (flowResult.consumed) return
-
   const triggerTypes: Array<
     'first_inbound_message' | 'new_message_received' | 'keyword_match'
   > = ['new_message_received', 'keyword_match']
@@ -88,10 +73,14 @@ export async function processDebouncedInboundTurn(
     triggerTypes.unshift('first_inbound_message')
   }
 
-  // The AI must stay quiet iff a deterministic responder actually tried to
-  // answer THIS merged turn. Decide it from the real dispatch results rather
-  // than a second DB lookup that could disagree (different text, race with
-  // an edit, missing triggers).
+  // Automations observe the inbound turn before Flow handling. This preserves
+  // the original new_message_received behaviour used by campaign routing:
+  // tag/AI/webhook automations must still run even when a contact currently
+  // has an active Flow.
+  //
+  // If an automation actually attempted a customer-facing response, do not
+  // also hand the same turn to a Flow; that would create two deterministic
+  // responders for one customer message.
   let deterministicResponderHandled = false
   for (const triggerType of triggerTypes) {
     const dispatch = await runAutomationsForTrigger({
@@ -108,6 +97,23 @@ export async function processDebouncedInboundTurn(
       },
     })
     if (dispatch.customer_facing_attempted) deterministicResponderHandled = true
+  }
+
+  if (!deterministicResponderHandled) {
+    const flowResult = await dispatchInboundToFlows({
+      accountId: job.account_id,
+      userId: job.user_id,
+      contactId: job.contact_id,
+      conversationId: job.conversation_id,
+      message: {
+        kind: 'text',
+        text: mergedText,
+        meta_message_id: syntheticMessageId,
+      },
+      isFirstInboundMessage: job.is_first_inbound,
+    })
+
+    if (flowResult.consumed) return
   }
 
   await dispatchInboundToAiReply({
