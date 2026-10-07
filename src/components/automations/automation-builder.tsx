@@ -1132,17 +1132,34 @@ function StepList(props: StepListProps) {
   return (
     <div className="flex w-full flex-col items-center">
       <AddButton onPick={(t) => props.addStepAt(scope, 0, t)} />
-      {steps.map((step, idx) => (
-        <StepRenderer
-          key={step.cid}
-          step={step}
-          index={idx}
-          total={steps.length}
-          basePath={basePath}
-          scope={scope}
-          {...rest}
-        />
-      ))}
+      {steps.map((step, idx) => {
+        const followsRootBranch =
+          scope.kind === "root" &&
+          idx > 0 &&
+          isBranchingType(steps[idx - 1]?.step_type ?? "")
+
+        return (
+          <div key={step.cid} className="contents">
+            {followsRootBranch && (
+              <div className="my-2 flex w-full max-w-[600px] items-center gap-2">
+                <div className="h-px flex-1 bg-border" />
+                <div className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                  After YES / NO · always runs
+                </div>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            )}
+            <StepRenderer
+              step={step}
+              index={idx}
+              total={steps.length}
+              basePath={basePath}
+              scope={scope}
+              {...rest}
+            />
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1510,22 +1527,28 @@ function StepEditor({
             </select>
           </FieldBlock>
           <FieldBlock label={t("config.operandLabel")}>
-            <Input
-              placeholder={
-                cfg.subject === "time_of_day"
-                  ? t("config.placeholderTime")
-                  : cfg.subject === "contact_field"
-                    ? t("config.placeholderContact")
-                    : cfg.subject === "tag_presence"
-                      ? t("config.placeholderTag")
+            {cfg.subject === "tag_presence" ? (
+              <TagSelect
+                value={(cfg.operand as string) ?? ""}
+                onChange={(v) => set({ operand: v })}
+                t={t}
+              />
+            ) : (
+              <Input
+                placeholder={
+                  cfg.subject === "time_of_day"
+                    ? t("config.placeholderTime")
+                    : cfg.subject === "contact_field"
+                      ? t("config.placeholderContact")
                       : cfg.subject === "variable"
                         ? t("config.placeholderVariable")
                         : ""
-              }
-              value={(cfg.operand as string) ?? ""}
-              onChange={(e) => set({ operand: e.target.value })}
-              className="bg-muted text-foreground"
-            />
+                }
+                value={(cfg.operand as string) ?? ""}
+                onChange={(e) => set({ operand: e.target.value })}
+                className="bg-muted text-foreground"
+              />
+            )}
           </FieldBlock>
           {(cfg.subject === "contact_field" ||
             cfg.subject === "message_content" ||
