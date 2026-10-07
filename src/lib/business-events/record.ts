@@ -16,6 +16,14 @@ export async function recordBusinessEvent(
 ): Promise<{ id: string }> {
   const eventType = input.eventType.trim()
   if (!eventType) throw new Error('business event type is required')
+  if (eventType.length > 128) throw new Error('business event type is too long')
+
+  const source = input.source?.trim() || 'system'
+  if (source.length > 64) throw new Error('business event source is too long')
+
+  const payload = input.payload ?? {}
+  const payloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8')
+  if (payloadBytes > 64 * 1024) throw new Error('business event payload exceeds 64 KiB')
 
   const { data, error } = await db
     .from('business_events')
@@ -25,8 +33,8 @@ export async function recordBusinessEvent(
       contact_id: input.contactId ?? null,
       conversation_id: input.conversationId ?? null,
       event_type: eventType,
-      source: input.source?.trim() || 'system',
-      payload: input.payload ?? {},
+      source,
+      payload,
     })
     .select('id')
     .single()
