@@ -132,6 +132,15 @@ export function validateFlowForActivation(
     }
   }
 
+  for (const cycle of findAutoAdvanceCycles(nodes)) {
+    issues.push({
+      severity: "error",
+      scope: "node",
+      node_key: cycle[0],
+      message: `Auto-advancing cycle detected: ${cycle.join(" → ")}. Add a customer-input or terminal node to break the loop.`,
+    });
+  }
+
   return issues;
 }
 
@@ -850,4 +859,59 @@ function outgoingEdges(node: NodeInput): string[] {
     default:
       return [];
   }
+}
+
+
+const AUTO_ADVANCING_TYPES = new Set([
+  "start",
+  "send_message",
+  "send_media",
+  "condition",
+  "ai_decision",
+  "set_tag",
+]);
+
+/**
+ * Returns cycles containing only auto-advancing nodes. These are dangerous
+ * because runtime traversal can send/execute repeatedly without waiting for a
+ * customer reply. Suspended/terminal nodes intentionally break the graph.
+ */
+export function findAutoAdvanceCycles(nodes: NodeInput[]): string[][] {
+  const byKey = new Map(nodes.map((node) => [node.node_key, node]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const stack: string[] = [];
+  const cycles = new Map<string, string[]>();
+
+  const visit = (key: string) => {
+    if (visited.has(key)) return;
+    const node = byKey.get(key);
+    if (!node || !AUTO_ADVANCING_TYPES.has(node.node_type)) {
+      visited.add(key);
+      return;
+    }
+
+    if (visiting.has(key)) {
+      const start = stack.indexOf(key);
+      if (start >= 0) {
+        const cycle = [...stack.slice(start), key];
+        const canonical = [...new Set(cycle.slice(0, -1))].sort().join("|");
+        if (!cycles.has(canonical)) cycles.set(canonical, cycle);
+      }
+      return;
+    }
+
+    visiting.add(key);
+    stack.push(key);
+    for (const next of outgoingEdges(node)) {
+      const nextNode = byKey.get(next);
+      if (nextNode && AUTO_ADVANCING_TYPES.has(nextNode.node_type)) visit(next);
+    }
+    stack.pop();
+    visiting.delete(key);
+    visited.add(key);
+  };
+
+  for (const node of nodes) visit(node.node_key);
+  return [...cycles.values()];
 }
