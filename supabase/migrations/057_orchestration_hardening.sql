@@ -147,3 +147,16 @@ CREATE INDEX IF NOT EXISTS idx_business_events_created_at
 
 CREATE INDEX IF NOT EXISTS idx_inbound_debounce_created_at
   ON inbound_debounce_jobs(created_at);
+
+
+-- Corporate integrations must survive deletion of the user who originally
+-- created them. Ownership is account-scoped; created_by is audit metadata.
+ALTER TABLE telegram_connections
+  ALTER COLUMN created_by DROP NOT NULL;
+
+ALTER TABLE telegram_connections
+  DROP CONSTRAINT IF EXISTS telegram_connections_created_by_fkey;
+
+ALTER TABLE telegram_connections
+  ADD CONSTRAINT telegram_connections_created_by_fkey
+  FOREIGN KEY (created_by) REFERENCES auth.users(id) ON DELETE SET NULL;
