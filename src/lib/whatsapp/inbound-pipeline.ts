@@ -134,73 +134,70 @@ export function isValidStatusTransition(current: string, incoming: string): bool
  */
 export async function handleStatusUpdate(
   db: SupabaseClient,
+  accountId: string,
   event: NormalizedStatusEvent,
 ): Promise<void> {
-  // 1) Mirror onto messages (legacy behavior). No `.select()`:
-  //    message_id is NOT unique (Meta ids repeat across numbers), so
-  //    this updates 0..N rows and must not assume a single row.
-  const { error: msgErr } = await db
+  // Provider message ids are not globally unique across WhatsApp numbers.
+  // Resolve account-owned rows first, then update by internal UUID so a
+  // callback can never mutate another tenant's messages.
+  const { data: messageRows, error: msgFetchErr } = await db
     .from('messages')
-    .update({ status: event.status })
+    .select('id, conversation_id, status, conversations!inner(account_id)')
     .eq('message_id', event.providerMessageId)
+    .eq('conversations.account_id', accountId)
 
-  if (msgErr) {
-    console.error('[inbound-pipeline] Error updating message status:', msgErr)
+  if (msgFetchErr) {
+    console.error('[inbound-pipeline] Error resolving message status rows:', msgFetchErr)
+  } else {
+    for (const row of messageRows ?? []) {
+      if (!isValidStatusTransition(String(row.status ?? ''), event.status)) continue
+      const { error: msgErr } = await db
+        .from('messages')
+        .update({ status: event.status })
+        .eq('id', row.id)
+      if (msgErr) {
+        console.error('[inbound-pipeline] Error updating message status:', msgErr)
+      }
+    }
   }
 
-  // 2) Mirror onto broadcast_recipients via whatsapp_message_id. The
-  //    aggregate trigger on broadcast_recipients re-derives the parent
-  //    broadcast's sent/delivered/read/failed counts automatically.
+  // Mirror onto account-owned broadcast recipients. The aggregate trigger on
+  // broadcast_recipients re-derives the parent campaign counters.
   const tsIso = new Date(event.timestampMs).toISOString()
-
-  const { data: recipient, error: recFetchErr } = await db
+  const { data: recipients, error: recFetchErr } = await db
     .from('broadcast_recipients')
-    .select('id, status')
+    .select('id, status, broadcasts!inner(account_id)')
     .eq('whatsapp_message_id', event.providerMessageId)
-    .maybeSingle()
+    .eq('broadcasts.account_id', accountId)
+    .order('created_at', { ascending: false })
 
   if (recFetchErr) {
     console.error('[inbound-pipeline] Error fetching broadcast recipient:', recFetchErr)
-  } else if (
-    recipient &&
-    isValidStatusTransition(recipient.status, event.status)
-  ) {
-    const update: Record<string, unknown> = { status: event.status }
-    if (event.status === 'sent') update.sent_at = tsIso
-    if (event.status === 'delivered') update.delivered_at = tsIso
-    if (event.status === 'read') update.read_at = tsIso
+  } else {
+    for (const recipient of recipients ?? []) {
+      if (!isValidStatusTransition(recipient.status, event.status)) continue
+      const update: Record<string, unknown> = { status: event.status }
+      if (event.status === 'sent') update.sent_at = tsIso
+      if (event.status === 'delivered') update.delivered_at = tsIso
+      if (event.status === 'read') update.read_at = tsIso
 
-    const { error: recUpdateErr } = await db
-      .from('broadcast_recipients')
-      .update(update)
-      .eq('id', recipient.id)
-
-    if (recUpdateErr) {
-      console.error('[inbound-pipeline] Error updating broadcast recipient status:', recUpdateErr)
+      const { error: recUpdateErr } = await db
+        .from('broadcast_recipients')
+        .update(update)
+        .eq('id', recipient.id)
+      if (recUpdateErr) {
+        console.error('[inbound-pipeline] Error updating broadcast recipient status:', recUpdateErr)
+      }
     }
   }
 
-  // 3) Webhook fan-out for messages we store (inbox / API sends). Runs
-  //    last so a slow subscriber can't delay the mirrors above. Bounded
-  //    to one row (message_id isn't unique) purely to resolve the
-  //    owning account for delivery.
-  const { data: msgRow } = await db
-    .from('messages')
-    .select('conversation_id, conversations(account_id)')
-    .eq('message_id', event.providerMessageId)
-    .limit(1)
-    .maybeSingle()
-
-  if (msgRow) {
-    const conv = msgRow.conversations as unknown as { account_id: string } | null
-    const accountId = conv?.account_id
-    if (accountId) {
-      await dispatchWebhookEvent(db, accountId, 'message.status_updated', {
-        whatsapp_message_id: event.providerMessageId,
-        conversation_id: msgRow.conversation_id,
-        status: event.status,
-      })
-    }
+  const firstMessage = (messageRows ?? [])[0]
+  if (firstMessage) {
+    await dispatchWebhookEvent(db, accountId, 'message.status_updated', {
+      whatsapp_message_id: event.providerMessageId,
+      conversation_id: firstMessage.conversation_id,
+      status: event.status,
+    })
   }
 }
 
