@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { validateFlowForActivation, reachableFromEntry } from "./validate";
+import {
+  validateFlowForActivation,
+  reachableFromEntry,
+  findAutoAdvanceCycles,
+} from "./validate";
 
 const validFlow = {
   name: "Welcome",
@@ -545,5 +549,60 @@ describe("reachableFromEntry", () => {
     ];
     const set = reachableFromEntry("a", nodes);
     expect(set).toEqual(new Set(["a", "b"]));
+  });
+});
+
+
+describe("findAutoAdvanceCycles", () => {
+  it("detects a cycle that can run without customer input", () => {
+    const nodes = [
+      { node_key: "a", node_type: "start", config: { next_node_key: "b" } },
+      { node_key: "b", node_type: "send_message", config: { text: "x", next_node_key: "c" } },
+      {
+        node_key: "c",
+        node_type: "condition",
+        config: {
+          subject: "var",
+          subject_key: "x",
+          operator: "present",
+          true_next: "b",
+          false_next: "end",
+        },
+      },
+      { node_key: "end", node_type: "end", config: {} },
+    ];
+
+    const cycles = findAutoAdvanceCycles(nodes);
+    expect(cycles.length).toBe(1);
+    expect(new Set(cycles[0])).toEqual(new Set(["b", "c"]));
+  });
+
+  it("allows loops that suspend for customer input", () => {
+    const nodes = [
+      { node_key: "a", node_type: "start", config: { next_node_key: "ask" } },
+      {
+        node_key: "ask",
+        node_type: "collect_input",
+        config: { prompt_text: "Again?", var_key: "answer", next_node_key: "a" },
+      },
+    ];
+
+    expect(findAutoAdvanceCycles(nodes)).toEqual([]);
+  });
+
+  it("surfaces auto cycles as activation errors", () => {
+    const nodes = [
+      { node_key: "a", node_type: "start", config: { next_node_key: "b" } },
+      { node_key: "b", node_type: "send_message", config: { text: "loop", next_node_key: "a" } },
+    ];
+    const issues = validateFlowForActivation(
+      { ...validFlow, entry_node_id: "a" },
+      nodes,
+    );
+    expect(
+      issues.some((issue) =>
+        issue.severity === "error" && issue.message.includes("Auto-advancing cycle"),
+      ),
+    ).toBe(true);
   });
 });
