@@ -57,22 +57,14 @@ export default function NewBroadcastPage() {
 
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
-  const [audience, setAudience] = useState<SmartAudienceConfig>({ type: 'all' });
-  const [variables, setVariables] = useState<VariableMap>({});
-  const [headerMediaUrl, setHeaderMediaUrl] = useState('');
-  const [name, setName] = useState('');
-  const [loadingDraft, setLoadingDraft] = useState(Boolean(draftId));
-
-  // Contacts -> Create broadcast stores a snapshot of the selected people
-  // in sessionStorage. Reuse the existing CSV audience path so the sender
-  // resolves the same account contacts by normalized phone without creating
-  // a second audience engine just for manual selections.
-  useEffect(() => {
-    if (draftId || source !== 'contacts') return;
+  const [audience, setAudience] = useState<SmartAudienceConfig>(() => {
+    if (draftId || source !== 'contacts' || typeof window === 'undefined') {
+      return { type: 'all' };
+    }
 
     try {
       const raw = window.sessionStorage.getItem(CONTACT_BROADCAST_SELECTION_KEY);
-      if (!raw) return;
+      if (!raw) return { type: 'all' };
       const rows = JSON.parse(raw) as { phone?: string; name?: string }[];
       const contacts = Array.isArray(rows)
         ? rows
@@ -80,20 +72,22 @@ export default function NewBroadcastPage() {
             .map((row) => ({ phone: row.phone!.trim(), name: row.name || undefined }))
         : [];
 
-      if (contacts.length > 0) {
-        setAudience({ type: 'csv', csvContacts: contacts });
-      }
+      return contacts.length > 0
+        ? { type: 'csv', csvContacts: contacts }
+        : { type: 'all' };
     } catch (error) {
       console.error('Failed to restore selected contacts for broadcast:', error);
-      toast.error('Could not load the selected contacts. Please select them again.');
+      return { type: 'all' };
     }
-  }, [draftId, source]);
+  });
+  const [variables, setVariables] = useState<VariableMap>({});
+  const [headerMediaUrl, setHeaderMediaUrl] = useState('');
+  const [name, setName] = useState('');
+  const [draftLoadPending, setDraftLoadPending] = useState(true);
+  const loadingDraft = Boolean(draftId && accountId && draftLoadPending);
 
   useEffect(() => {
-    if (!draftId || !accountId) {
-      setLoadingDraft(false);
-      return;
-    }
+    if (!draftId || !accountId) return;
 
     let cancelled = false;
 
@@ -125,7 +119,7 @@ export default function NewBroadcastPage() {
       if (cancelled) return;
       if (templateError || !templates?.[0]) {
         toast.error('The template used by this draft is no longer available.');
-        setLoadingDraft(false);
+        setDraftLoadPending(false);
         return;
       }
 
@@ -150,7 +144,7 @@ export default function NewBroadcastPage() {
       setVariables((draft.template_variables ?? {}) as VariableMap);
       setAudience(restoredAudience);
       setCurrentStep(3);
-      setLoadingDraft(false);
+      setDraftLoadPending(false);
     }
 
     loadDraft();
