@@ -58,7 +58,23 @@ export interface DispatchInput {
   context?: AutomationContext
 }
 
-export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
+export interface AutomationDispatchResult {
+  matched: number
+  succeeded: number
+  failed: number
+  skipped: number
+}
+
+export async function runAutomationsForTrigger(
+  input: DispatchInput,
+): Promise<AutomationDispatchResult> {
+  const result: AutomationDispatchResult = {
+    matched: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+  }
+
   try {
     const db = supabaseAdmin()
     if (input.contactId) {
@@ -70,11 +86,13 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
         .maybeSingle()
       if (ownErr) {
         console.error('[automations] contact ownership check failed:', ownErr)
-        return
+        result.failed += 1
+        return result
       }
       if (!owned) {
         console.warn('[automations] contact not in account, refusing dispatch', input.contactId)
-        return
+        result.failed += 1
+        return result
       }
     }
 
@@ -87,21 +105,52 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
 
     if (error) {
       console.error('[automations] fetch failed:', error)
-      return
+      result.failed += 1
+      return result
     }
-    if (!automations || automations.length === 0) return
+    if (!automations || automations.length === 0) return result
 
     for (const automation of automations as Automation[]) {
       if (!triggerMatches(automation, input.context)) continue
+      result.matched += 1
+
+      // Durable business events are at-least-once. If this exact automation
+      // already completed successfully for the event, do not repeat its side
+      // effects when another automation from the same event is retried.
+      if (input.context?.business_event_id) {
+        const { data: priorSuccess, error: priorError } = await db
+          .from('automation_logs')
+          .select('id')
+          .eq('automation_id', automation.id)
+          .eq('business_event_id', input.context.business_event_id)
+          .eq('status', 'success')
+          .limit(1)
+        if (priorError) {
+          console.error('[automations] business-event idempotency lookup failed:', priorError)
+          result.failed += 1
+          continue
+        }
+        if (priorSuccess && priorSuccess.length > 0) {
+          result.skipped += 1
+          continue
+        }
+      }
+
       try {
-        await executeAutomation(automation, input)
+        const ok = await executeAutomation(automation, input)
+        if (ok) result.succeeded += 1
+        else result.failed += 1
       } catch (err) {
+        result.failed += 1
         console.error('[automations] execute failed:', automation.id, err)
       }
     }
   } catch (err) {
+    result.failed += 1
     console.error('[automations] dispatch failed:', err)
   }
+
+  return result
 }
 
 export async function resumePendingExecution(pending: {
@@ -147,7 +196,7 @@ export async function resumePendingExecution(pending: {
   }
 }
 
-async function executeAutomation(automation: Automation, input: DispatchInput) {
+async function executeAutomation(automation: Automation, input: DispatchInput): Promise<boolean> {
   const db = supabaseAdmin()
 
   const { data: log, error: logErr } = await db
@@ -158,6 +207,7 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
       user_id: automation.user_id,
       contact_id: input.contactId ?? null,
       trigger_event: input.triggerType,
+      business_event_id: input.context?.business_event_id ?? null,
       steps_executed: [],
       status: 'failed',
     })
@@ -166,7 +216,7 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
 
   if (logErr || !log) {
     console.error('[automations] cannot create log:', logErr)
-    return
+    return false
   }
 
   await executeStepsFrom({
@@ -184,6 +234,17 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     p_automation_id: automation.id,
   })
   if (rpcErr) console.error('[automations] increment counter failed:', rpcErr)
+
+  const { data: completedLog, error: completedLogError } = await db
+    .from('automation_logs')
+    .select('status')
+    .eq('id', log.id)
+    .single()
+  if (completedLogError) {
+    console.error('[automations] cannot verify execution status:', completedLogError)
+    return false
+  }
+  return completedLog?.status !== 'failed'
 }
 
 interface ExecuteArgs {
