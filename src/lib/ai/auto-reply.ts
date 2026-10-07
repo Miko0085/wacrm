@@ -10,7 +10,8 @@ import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { recordBusinessEvent } from '@/lib/business-events/record'
-import { runAutomationsForTrigger } from '@/lib/automations/engine'
+import { triggerMatches } from '@/lib/automations/engine'
+import type { Automation } from '@/types'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -52,23 +53,6 @@ export async function dispatchInboundToAiReply(
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
 
-    // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
-    const { data: autoResponders } = await db
-      .from('automations')
-      .select('id')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-      .limit(1)
-    if (autoResponders && autoResponders.length > 0) return
-
     const { data: conv, error: convErr } = await db
       .from('conversations')
       .select('assigned_agent_id, ai_autoreply_disabled, ai_reply_count')
@@ -83,6 +67,25 @@ export async function dispatchInboundToAiReply(
 
     const messages = await buildConversationContext(db, conversationId)
     if (messages.length === 0) return
+
+    // Deterministic, user-configured responders win over the LLM, but only
+    // when they actually match THIS message. Previously the mere existence of
+    // any keyword automation disabled AI auto-reply account-wide.
+    const latestText = latestUserMessage(messages)
+    const { data: autoResponders, error: respondersError } = await db
+      .from('automations')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('is_active', true)
+      .in('trigger_type', ['new_message_received', 'keyword_match'])
+    if (respondersError) {
+      console.error('[ai auto-reply] responder lookup failed:', respondersError)
+      return
+    }
+    const responderMatched = ((autoResponders ?? []) as Automation[]).some((automation) =>
+      triggerMatches(automation, { message_text: latestText }),
+    )
+    if (responderMatched) return
 
     // Account-wide throttle on the shared BYO key. The per-conversation
     // cap bounds one thread; this bounds a burst across many threads (a
@@ -162,7 +165,7 @@ export async function dispatchInboundToAiReply(
         summary,
         assigned_agent_id: config.handoffAgentId ?? null,
       }
-      const event = await recordBusinessEvent(db, {
+      await recordBusinessEvent(db, {
         accountId,
         userId: configOwnerUserId,
         contactId,
@@ -170,17 +173,6 @@ export async function dispatchInboundToAiReply(
         eventType: 'human_handoff_requested',
         source: 'ai_auto_reply',
         payload,
-      })
-      await runAutomationsForTrigger({
-        accountId,
-        triggerType: 'business_event',
-        contactId,
-        context: {
-          conversation_id: conversationId,
-          business_event_id: event.id,
-          business_event_type: 'human_handoff_requested',
-          business_event_payload: payload,
-        },
       })
       return
     }
