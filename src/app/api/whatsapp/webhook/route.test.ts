@@ -142,6 +142,9 @@ vi.mock('@supabase/supabase-js', () => ({
     },
     rpc: (name: string, args: Record<string, unknown>) => {
       h.state.rpcCalls.push({ name, args })
+      if (name === 'queue_inbound_debounce') {
+        return Promise.resolve({ data: 'debounce-job-1', error: null })
+      }
       return Promise.resolve({ data: null, error: null })
     },
     // Service-role Storage, used by the inbound-media mirror (#466).
@@ -294,9 +297,14 @@ describe('inbound webhook: idempotent insert (#367)', () => {
       onConflict: 'conversation_id,message_id',
       ignoreDuplicates: true,
     })
-    // Downstream side effects ran exactly once.
-    expect(h.state.rpcCalls).toHaveLength(1)
-    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    // The message is persisted immediately, unread is bumped immediately,
+    // and conversational routing is queued for the durable debounce worker.
+    expect(h.state.rpcCalls.map((call) => call.name)).toEqual([
+      'bump_conversation_on_inbound',
+      'queue_inbound_debounce',
+    ])
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
     expect(h.dispatchWebhookEvent).toHaveBeenCalledTimes(1)
   })
 
@@ -320,10 +328,17 @@ describe('inbound webhook: atomic unread bump (#369)', () => {
   it('increments unread through the DB-side RPC, not a read-modify-write', async () => {
     await runWebhook()
 
-    expect(h.state.rpcCalls).toHaveLength(1)
     expect(h.state.rpcCalls[0]).toMatchObject({
       name: 'bump_conversation_on_inbound',
       args: { p_conversation_id: 'conv-1' },
+    })
+    expect(h.state.rpcCalls[1]).toMatchObject({
+      name: 'queue_inbound_debounce',
+      args: {
+        p_conversation_id: 'conv-1',
+        p_message_id: 'wamid.TEST1',
+        p_text: 'hello',
+      },
     })
   })
 })
