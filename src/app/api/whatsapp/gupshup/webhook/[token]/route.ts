@@ -188,7 +188,7 @@ async function processGupshupWebhook(
         })
         return
       }
-      await handleStatusUpdate(db, status)
+      await handleStatusUpdate(db, accountId, status)
       return
     }
 
