@@ -1,0 +1,37 @@
+name: Lockfile Refresh
+
+on:
+  push:
+    branches: ['feature/wacrm-smart-lists']
+    paths:
+      - '.github/workflows/lockfile-refresh.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Refresh production dependencies
+        run: |
+          npm install --package-lock-only --save-exact next@16.4.0 eslint-config-next@16.4.0
+          npm install --package-lock-only --save-dev shadcn@4.16.2
+          npm audit fix --package-lock-only || true
+          npm audit --omit=dev --audit-level=high || true
+
+      - name: Upload refreshed manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: refreshed-node-manifests
+          path: |
+            package.json
+            package-lock.json
+          if-no-files-found: error
