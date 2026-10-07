@@ -44,52 +44,87 @@ describe('isValidStatusTransition', () => {
 })
 
 describe('handleStatusUpdate', () => {
-  function mockDb(recipientRow: { id: string; status: string } | null) {
-    const updates: { table: string; row: Record<string, unknown> }[] = []
+  function mockDb(args: {
+    messages?: Array<{ id: string; conversation_id: string; status: string }>
+    recipients?: Array<{ id: string; status: string }>
+  } = {}) {
+    const updates: { table: string; row: Record<string, unknown>; id?: string }[] = []
+
     const db = {
       from(table: string) {
-        return {
-          update: (row: Record<string, unknown>) => {
-            updates.push({ table, row })
-            return { eq: () => Promise.resolve({ error: null }) }
-          },
-          select: () => ({
-            eq: () => ({
-              maybeSingle: async () =>
-                table === 'broadcast_recipients'
-                  ? { data: recipientRow, error: null }
-                  : { data: null, error: null },
-              limit: () => ({
-                maybeSingle: async () => ({ data: null, error: null }),
-              }),
-            }),
-          }),
+        const state: { updateRow?: Record<string, unknown> } = {}
+        const chain: Record<string, unknown> = {}
+
+        chain.select = () => chain
+        chain.update = (row: Record<string, unknown>) => {
+          state.updateRow = row
+          return chain
         }
+        chain.eq = (field: string, value: unknown) => {
+          if (state.updateRow && field === 'id') {
+            updates.push({ table, row: state.updateRow, id: String(value) })
+          }
+          return chain
+        }
+        chain.order = () => chain
+        chain.limit = () => chain
+        chain.then = (
+          onFulfilled: (value: unknown) => unknown,
+          onRejected?: (reason: unknown) => unknown,
+        ) => {
+          const value =
+            table === 'messages'
+              ? { data: args.messages ?? [], error: null }
+              : table === 'broadcast_recipients'
+                ? { data: args.recipients ?? [], error: null }
+                : { data: [], error: null }
+          return Promise.resolve(value).then(onFulfilled, onRejected)
+        }
+
+        return chain
       },
     } as unknown as SupabaseClient
+
     return { db, updates }
   }
 
-  it('mirrors a forward status transition onto broadcast_recipients', async () => {
-    const { db, updates } = mockDb({ id: 'r1', status: 'sent' })
-    await handleStatusUpdate(db, { providerMessageId: 'wamid.1', status: 'delivered', timestampMs: 1700000000000 })
-    const recipientUpdate = updates.find((u) => u.table === 'broadcast_recipients')
-    expect(recipientUpdate?.row.status).toBe('delivered')
-    expect(recipientUpdate?.row.delivered_at).toBeDefined()
+  it('mirrors only account-resolved message and recipient rows', async () => {
+    const { db, updates } = mockDb({
+      messages: [{ id: 'm1', conversation_id: 'conv-1', status: 'sent' }],
+      recipients: [{ id: 'r1', status: 'sent' }],
+    })
+
+    await handleStatusUpdate(db, 'acc-1', {
+      providerMessageId: 'wamid.1',
+      status: 'delivered',
+      timestampMs: 1700000000000,
+    })
+
+    expect(updates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: 'messages', id: 'm1', row: { status: 'delivered' } }),
+        expect.objectContaining({
+          table: 'broadcast_recipients',
+          id: 'r1',
+          row: expect.objectContaining({ status: 'delivered', delivered_at: expect.any(String) }),
+        }),
+      ]),
+    )
   })
 
-  it('does not write broadcast_recipients on a backward/out-of-order transition', async () => {
-    const { db, updates } = mockDb({ id: 'r1', status: 'read' })
-    await handleStatusUpdate(db, { providerMessageId: 'wamid.1', status: 'delivered', timestampMs: 1700000000000 })
-    const recipientUpdate = updates.find((u) => u.table === 'broadcast_recipients')
-    expect(recipientUpdate).toBeUndefined()
-  })
+  it('does not regress out-of-order message or recipient statuses', async () => {
+    const { db, updates } = mockDb({
+      messages: [{ id: 'm1', conversation_id: 'conv-1', status: 'read' }],
+      recipients: [{ id: 'r1', status: 'read' }],
+    })
 
-  it('always mirrors onto messages.status regardless of the recipient-row guard', async () => {
-    const { db, updates } = mockDb(null)
-    await handleStatusUpdate(db, { providerMessageId: 'wamid.1', status: 'read', timestampMs: 1700000000000 })
-    const messageUpdate = updates.find((u) => u.table === 'messages')
-    expect(messageUpdate?.row.status).toBe('read')
+    await handleStatusUpdate(db, 'acc-1', {
+      providerMessageId: 'wamid.1',
+      status: 'delivered',
+      timestampMs: 1700000000000,
+    })
+
+    expect(updates).toHaveLength(0)
   })
 })
 
