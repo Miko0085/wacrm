@@ -99,7 +99,7 @@ export async function drainBusinessEvents(
 
     const event = claimed as PendingBusinessEvent
     try {
-      await runAutomationsForTrigger({
+      const dispatch = await runAutomationsForTrigger({
         accountId: event.account_id,
         triggerType: 'business_event',
         contactId: event.contact_id,
@@ -110,6 +110,12 @@ export async function drainBusinessEvents(
           business_event_payload: event.payload ?? {},
         },
       })
+
+      if (dispatch.failed > 0) {
+        throw new Error(
+          `business event automations failed: matched=${dispatch.matched} failed=${dispatch.failed}`,
+        )
+      }
 
       const { error: doneError } = await db
         .from('business_events')
