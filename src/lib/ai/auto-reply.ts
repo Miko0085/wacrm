@@ -82,10 +82,34 @@ export async function dispatchInboundToAiReply(
       console.error('[ai auto-reply] responder lookup failed:', respondersError)
       return
     }
-    const responderMatched = ((autoResponders ?? []) as Automation[]).some((automation) =>
-      triggerMatches(automation, { message_text: latestText }),
-    )
-    if (responderMatched) return
+    const matchedResponderIds = ((autoResponders ?? []) as Automation[])
+      .filter((automation) => triggerMatches(automation, { message_text: latestText }))
+      .map((automation) => automation.id)
+
+    if (matchedResponderIds.length > 0) {
+      // Only suppress the LLM when a matching automation can actually produce
+      // a customer-facing response (directly or by starting a Flow). Tag-only,
+      // CRM-only and logging automations must not mute AI for the whole turn.
+      const { data: responseSteps, error: responseStepsError } = await db
+        .from('automation_steps')
+        .select('id')
+        .in('automation_id', matchedResponderIds)
+        .in('step_type', [
+          'send_message',
+          'send_buttons',
+          'send_list',
+          'send_template',
+          'send_media',
+          'start_flow',
+        ])
+        .limit(1)
+
+      if (responseStepsError) {
+        console.error('[ai auto-reply] responder step lookup failed:', responseStepsError)
+        return
+      }
+      if (responseSteps && responseSteps.length > 0) return
+    }
 
     // Account-wide throttle on the shared BYO key. The per-conversation
     // cap bounds one thread; this bounds a burst across many threads (a
