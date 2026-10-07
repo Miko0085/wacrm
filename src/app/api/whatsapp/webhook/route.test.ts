@@ -562,3 +562,31 @@ describe('inbound webhook: after() awaits automations (#368)', () => {
     expect(h.state.automationCompleted).toBe(3)
   })
 })
+
+describe('inbound webhook: immediate path AI suppression follows the actual automation result', () => {
+  const dispatchResult = (attempted: boolean) => ({
+    matched: 1,
+    succeeded: attempted ? 1 : 0,
+    failed: 0,
+    skipped: 0,
+    customer_facing_attempted: attempted,
+  })
+
+  it('passes deterministicResponderHandled=true when an automation attempted a customer-facing step', async () => {
+    h.state.debounceQueueFails = true
+    h.runAutomationsForTrigger.mockResolvedValue(dispatchResult(true))
+    await runWebhook()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith(
+      expect.objectContaining({ deterministicResponderHandled: true }),
+    )
+  })
+
+  it('passes deterministicResponderHandled=false for CRM-only / no-match automations', async () => {
+    h.state.debounceQueueFails = true
+    h.runAutomationsForTrigger.mockResolvedValue(dispatchResult(false))
+    await runWebhook()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith(
+      expect.objectContaining({ deterministicResponderHandled: false }),
+    )
+  })
+})
