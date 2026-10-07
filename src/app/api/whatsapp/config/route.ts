@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { requireActiveAccount } from '@/lib/auth/account'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import {
   registerPhoneNumber,
@@ -22,16 +23,14 @@ import { resolveWhatsAppProvider } from '@/lib/whatsapp/providers/resolve'
  * should treat that the same as "not connected".
  */
 async function resolveAccountId(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
+  _supabase: Awaited<ReturnType<typeof createClient>>,
+  _userId: string,
 ): Promise<string | null> {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('account_id')
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (error || !data?.account_id) return null
-  return data.account_id as string
+  try {
+    return (await requireActiveAccount()).accountId
+  } catch {
+    return null
+  }
 }
 
 // Lazy-initialised service-role client. We need it to detect a

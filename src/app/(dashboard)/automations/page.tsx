@@ -20,6 +20,7 @@ import {
 
 import { createClient } from "@/lib/supabase/client"
 import { useCan } from "@/hooks/use-can"
+import { useAuth } from "@/hooks/use-auth"
 import { useTranslations } from "next-intl"
 import type { Automation } from "@/types"
 import { Button } from "@/components/ui/button"
@@ -61,6 +62,7 @@ const TEMPLATE_ICON: Record<TemplateSlug, typeof Zap> = {
 export default function AutomationsPage() {
   const router = useRouter()
   const canCreate = useCan("send-messages")
+  const { accountId } = useAuth()
   const t = useTranslations("Automations.list")
   const [automations, setAutomations] = useState<Automation[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -73,6 +75,7 @@ export default function AutomationsPage() {
       const { data, error: fetchErr } = await supabase
         .from("automations")
         .select("*")
+        .eq("account_id", accountId!)
         .order("created_at", { ascending: false })
       if (fetchErr) throw fetchErr
       setAutomations((data ?? []) as Automation[])
@@ -83,7 +86,7 @@ export default function AutomationsPage() {
 
   useEffect(() => {
     load()
-  }, [])
+  }, [accountId])
 
   async function toggleActive(a: Automation, next: boolean) {
     // Optimistic flip so the switch feels instant.

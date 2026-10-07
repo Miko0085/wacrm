@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
 import { useTranslations } from "next-intl";
+import { useAuth } from "@/hooks/use-auth";
 
 export interface TemplateSendValues {
   body: string[];
@@ -80,6 +81,7 @@ export function TemplatePicker({
   onSelect,
 }: TemplatePickerProps) {
   const t = useTranslations("Inbox.templatePicker");
+  const { accountId } = useAuth();
 
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -114,6 +116,7 @@ export function TemplatePicker({
       const { data, error } = await supabase
         .from("message_templates")
         .select("*")
+        .eq("account_id", accountId!)
         .eq("status", "APPROVED")
         .order("created_at", { ascending: false });
 

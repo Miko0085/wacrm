@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+import { useAuth } from "@/hooks/use-auth";
 
 const STAGE_COLORS = [
   "#3b82f6",
@@ -71,6 +72,7 @@ export function PipelineSettings({
 }: PipelineSettingsProps) {
   const t = useTranslations("Pipelines.settings");
   const supabase = createClient();
+  const { accountId } = useAuth();
 
   const [name, setName] = useState(pipeline.name);
   const [localStages, setLocalStages] = useState<PipelineStage[]>(stages);
@@ -122,7 +124,8 @@ export function PipelineSettings({
       supabase
         .from("pipelines")
         .update({ name: name.trim() })
-        .eq("id", pipeline.id),
+        .eq("id", pipeline.id)
+        .eq("account_id", accountId!),
       supabase.from("pipeline_stages").upsert(stageRows, { onConflict: "id" }),
     ]);
 
@@ -166,7 +169,8 @@ export function PipelineSettings({
     const { count } = await supabase
       .from("deals")
       .select("id", { count: "exact", head: true })
-      .eq("stage_id", stageId);
+      .eq("stage_id", stageId)
+      .eq("account_id", accountId!);
     if (count && count > 0) {
       toast.error(t("toastMoveOrDeleteDeals"));
       return;
@@ -188,7 +192,8 @@ export function PipelineSettings({
     const { error } = await supabase
       .from("pipelines")
       .delete()
-      .eq("id", pipeline.id);
+      .eq("id", pipeline.id)
+      .eq("account_id", accountId!);
     setDeleting(false);
     if (error) {
       toast.error(t("toastFailedDeletePipeline"));

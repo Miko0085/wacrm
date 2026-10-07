@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
     rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
     afterCallbacks: [] as (() => Promise<void> | void)[],
     automationStarted: 0,
+    debounceQueueFails: false,
     automationCompleted: 0,
     /** whatsapp_config.mirror_inbound_media for the matched row (#466). */
     mirrorInboundMedia: true as boolean | undefined,
@@ -142,6 +143,12 @@ vi.mock('@supabase/supabase-js', () => ({
     },
     rpc: (name: string, args: Record<string, unknown>) => {
       h.state.rpcCalls.push({ name, args })
+      if (name === 'queue_inbound_debounce') {
+        if (h.state.debounceQueueFails) {
+          return Promise.resolve({ data: null, error: new Error('queue down') })
+        }
+        return Promise.resolve({ data: 'debounce-job-1', error: null })
+      }
       return Promise.resolve({ data: null, error: null })
     },
     // Service-role Storage, used by the inbound-media mirror (#466).
@@ -256,6 +263,7 @@ beforeEach(() => {
   h.state.rpcCalls = []
   h.state.afterCallbacks = []
   h.state.automationStarted = 0
+  h.state.debounceQueueFails = false
   h.state.automationCompleted = 0
   h.state.mirrorInboundMedia = true
   h.state.storageUploads = []
@@ -294,9 +302,14 @@ describe('inbound webhook: idempotent insert (#367)', () => {
       onConflict: 'conversation_id,message_id',
       ignoreDuplicates: true,
     })
-    // Downstream side effects ran exactly once.
-    expect(h.state.rpcCalls).toHaveLength(1)
-    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    // The message is persisted immediately, unread is bumped immediately,
+    // and conversational routing is queued for the durable debounce worker.
+    expect(h.state.rpcCalls.map((call) => call.name)).toEqual([
+      'bump_conversation_on_inbound',
+      'queue_inbound_debounce',
+    ])
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
     expect(h.dispatchWebhookEvent).toHaveBeenCalledTimes(1)
   })
 
@@ -320,10 +333,17 @@ describe('inbound webhook: atomic unread bump (#369)', () => {
   it('increments unread through the DB-side RPC, not a read-modify-write', async () => {
     await runWebhook()
 
-    expect(h.state.rpcCalls).toHaveLength(1)
     expect(h.state.rpcCalls[0]).toMatchObject({
       name: 'bump_conversation_on_inbound',
       args: { p_conversation_id: 'conv-1' },
+    })
+    expect(h.state.rpcCalls[1]).toMatchObject({
+      name: 'queue_inbound_debounce',
+      args: {
+        p_conversation_id: 'conv-1',
+        p_message_id: 'wamid.TEST1',
+        p_text: 'hello',
+      },
     })
   })
 })
@@ -529,6 +549,10 @@ describe('inbound webhook: inbound media is mirrored (#466)', () => {
 
 describe('inbound webhook: after() awaits automations (#368)', () => {
   it('every triggered automation settles before the after() callback resolves', async () => {
+    // Text turns normally go through the durable debounce queue. The #368
+    // contract applies to the immediate-dispatch path, which is what runs
+    // when the queue is unavailable (fail-open).
+    h.state.debounceQueueFails = true
     await runWebhook()
 
     // first_inbound_message + new_message_received + keyword_match.
@@ -536,5 +560,33 @@ describe('inbound webhook: after() awaits automations (#368)', () => {
     // If the dispatches were fire-and-forget, completed would still be 0
     // here — the callback would have resolved before the timers fired.
     expect(h.state.automationCompleted).toBe(3)
+  })
+})
+
+describe('inbound webhook: immediate path AI suppression follows the actual automation result', () => {
+  const dispatchResult = (attempted: boolean) => ({
+    matched: 1,
+    succeeded: attempted ? 1 : 0,
+    failed: 0,
+    skipped: 0,
+    customer_facing_attempted: attempted,
+  })
+
+  it('passes deterministicResponderHandled=true when an automation attempted a customer-facing step', async () => {
+    h.state.debounceQueueFails = true
+    h.runAutomationsForTrigger.mockResolvedValue(dispatchResult(true))
+    await runWebhook()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith(
+      expect.objectContaining({ deterministicResponderHandled: true }),
+    )
+  })
+
+  it('passes deterministicResponderHandled=false for CRM-only / no-match automations', async () => {
+    h.state.debounceQueueFails = true
+    h.runAutomationsForTrigger.mockResolvedValue(dispatchResult(false))
+    await runWebhook()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith(
+      expect.objectContaining({ deterministicResponderHandled: false }),
+    )
   })
 })

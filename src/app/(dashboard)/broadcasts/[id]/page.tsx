@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/use-auth';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -145,6 +146,7 @@ function downloadBlob(filename: string, content: string) {
 }
 
 export default function BroadcastDetailPage() {
+  const { accountId } = useAuth();
   const params = useParams();
   const router = useRouter();
   const t = useTranslations('Broadcasts.detail');
@@ -172,6 +174,7 @@ export default function BroadcastDetailPage() {
         .from('broadcasts')
         .select('*')
         .eq('id', broadcastId)
+        .eq('account_id', accountId!)
         .single();
 
       if (bcError) throw bcError;
@@ -278,6 +281,55 @@ export default function BroadcastDetailPage() {
     }
   }
 
+  async function handleCancelSchedule() {
+    const supabase = createClient();
+
+    // Claim the cancellation by changing only a still-scheduled row.
+    // If cron already moved it to sending, do not touch recipient rows.
+    const { data: cancelled, error: broadcastError } = await supabase
+      .from('broadcasts')
+      .update({
+        status: 'draft',
+        scheduled_at: null,
+        total_recipients: 0,
+        sent_count: 0,
+        delivered_count: 0,
+        read_count: 0,
+        replied_count: 0,
+        failed_count: 0,
+      })
+      .eq('id', broadcastId)
+      .eq('account_id', accountId!)
+      .eq('status', 'scheduled')
+      .select('id')
+      .maybeSingle();
+
+    if (broadcastError) {
+      toast.error(`Failed to cancel schedule: ${broadcastError.message}`);
+      return;
+    }
+    if (!cancelled) {
+      toast.error('This broadcast has already started and can no longer be cancelled.');
+      await fetchData();
+      return;
+    }
+
+    const { error: recipientsError } = await supabase
+      .from('broadcast_recipients')
+      .delete()
+      .eq('broadcast_id', broadcastId);
+
+    if (recipientsError) {
+      toast.error(
+        `Schedule cancelled, but the recipient snapshot could not be cleared: ${recipientsError.message}`,
+      );
+      return;
+    }
+
+    toast.success('Schedule cancelled. Broadcast returned to draft.');
+    router.push(`/broadcasts/new?draft=${broadcastId}`);
+  }
+
   async function handleDelete() {
     setDeleting(true);
     const supabase = createClient();
@@ -288,7 +340,8 @@ export default function BroadcastDetailPage() {
     const { error: delErr } = await supabase
       .from('broadcasts')
       .delete()
-      .eq('id', broadcastId);
+      .eq('id', broadcastId)
+      .eq('account_id', accountId!);
     setDeleting(false);
     if (delErr) {
       toast.error(t('toastFailedDelete', { error: delErr.message }));
@@ -409,9 +462,47 @@ export default function BroadcastDetailPage() {
         )}
       </div>
 
+      {broadcast.status === 'scheduled' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+          <div>
+            <p className="font-medium text-foreground">Scheduled broadcast</p>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              {broadcast.scheduled_at
+                ? `Will send ${new Date(broadcast.scheduled_at).toLocaleString()}`
+                : 'Waiting for its scheduled send time.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => handleResume('pending')}
+              disabled={resumingScope !== null}
+            >
+              {resumingScope === 'pending' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <PlayCircle className="h-3.5 w-3.5" />
+              )}
+              Send now
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancelSchedule}
+              disabled={resumingScope !== null}
+              className="border-border text-muted-foreground hover:bg-muted"
+            >
+              Cancel schedule
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Resume / retry (issue #472). Only rendered when there is
-          actually something outstanding. */}
-      {(pendingCount > 0 || retryableCount > 0) && (
+          actually something outstanding and the campaign is not waiting
+          for its scheduled time. */}
+      {broadcast.status !== 'scheduled' &&
+        (pendingCount > 0 || retryableCount > 0) && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
           <div className="text-sm">
             <p className="font-medium text-foreground">

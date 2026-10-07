@@ -127,7 +127,7 @@ function emptyButton(type: TemplateButton['type']): TemplateButton {
 export function TemplateManager() {
   const t = useTranslations('Settings.templates');
   const supabase = createClient();
-  const { user, loading: authLoading } = useAuth();
+  const { user, accountId, loading: authLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
@@ -179,21 +179,21 @@ export function TemplateManager() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!user || !accountId) {
       setLoading(false);
       return;
     }
-    fetchTemplates(user.id);
+    fetchTemplates(accountId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user?.id]);
+  }, [authLoading, user?.id, accountId]);
 
-  async function fetchTemplates(userId: string) {
+  async function fetchTemplates(activeAccountId: string) {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('message_templates')
         .select('*')
-        .eq('user_id', userId)
+        .eq('account_id', activeAccountId)
         .order('created_at', { ascending: false });
       if (error) throw error;
       setTemplates(data || []);

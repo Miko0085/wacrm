@@ -38,7 +38,9 @@
     "defaultAvatar": "아바타",
     "menuProfile": "프로필",
     "menuSettings": "설정",
-    "menuSignOut": "로그아웃"
+    "menuSignOut": "로그아웃",
+    "switchAccount": "계정 전환",
+    "switchFailed": "계정을 전환할 수 없습니다"
   },
   "Header": {
     "dashboard": "대시보드",
@@ -862,6 +864,7 @@
         "send_buttons": "버튼 보내기",
         "send_list": "목록 보내기",
         "send_template": "템플릿 보내기",
+        "send_media": "미디어 보내기",
         "add_tag": "태그 추가",
         "remove_tag": "태그 제거",
         "assign_conversation": "대화 담당자 지정",
@@ -869,7 +872,10 @@
         "create_deal": "딜 생성",
         "wait": "대기",
         "condition": "조건 (If/Else)",
-        "send_webhook": "웹훅 보내기",
+        "emit_business_event": "비즈니스 이벤트 발생",
+          "send_telegram": "Telegram 알림 보내기",
+          "start_flow": "플로우 시작",
+          "send_webhook": "웹훅 보내기",
         "close_conversation": "대화 닫기"
       },
       "triggers": {
@@ -904,6 +910,10 @@
         "time_based": {
           "label": "시간 기반",
           "hint": "반복 일정에 따라"
+        },
+        "business_event": {
+          "label": "비즈니스 이벤트",
+          "hint": "WACRM 비즈니스 이벤트가 발생할 때"
         }
       },
       "trigger": "트리거",
@@ -995,12 +1005,14 @@
           "tag_presence": "태그 존재 여부",
           "contact_field": "연락처 필드",
           "message_content": "메시지 내용",
-          "time_of_day": "시간대"
+          "time_of_day": "시간대",
+          "variable": "자동화 변수"
         },
         "operandLabel": "피연산자",
         "placeholderTime": "HH:mm-HH:mm",
         "placeholderContact": "이름 / 이메일 / 회사",
         "placeholderTag": "태그 id",
+        "placeholderVariable": "ai_intent 또는 vars.ai_intent",
         "urlLabel": "URL",
         "headersLabel": "헤더",
         "placeholderHeaders": "{\"Authorization\": \"Bearer ...\"}",
@@ -1539,7 +1551,18 @@
       "step4_5": "\"messages\" 웹훅 필드를 구독",
       "metaDocs": "Meta WhatsApp API 문서"
     },
+    "subAccounts": {
+      "title": "Sub-accounts",
+      "description": "Sub-accounts를 만들고 이름을 지정합니다.",
+      "placeholder": "Sub-account name",
+      "create": "Create",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "loadFailed": "Could not load sub-accounts",
+      "createFailed": "Could not create sub-account"
+    },
     "sections": {
+      "sub-accounts": "Sub-accounts",
       "overview": "개요",
       "profile": "내 프로필",
       "security": "로그인 & 보안",
@@ -1550,7 +1573,8 @@
       "fields": "필드 & 태그",
       "deals": "딜 & 통화",
       "members": "팀원",
-      "api": "API 키"
+      "api": "API 키",
+      "telegram": "Telegram"
     },
     "groups": {
       "account": "계정",

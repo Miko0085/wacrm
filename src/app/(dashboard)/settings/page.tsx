@@ -18,6 +18,8 @@ import { FieldsAndTagsPanel } from '@/components/settings/fields-and-tags-panel'
 import { DealsSettings } from '@/components/settings/deals-settings';
 import { MembersTab } from '@/components/settings/members-tab';
 import { ApiKeysSettings } from '@/components/settings/api-keys-settings';
+import { SubAccountsManager } from '@/components/settings/sub-accounts-manager';
+import { TelegramSettings } from '@/components/settings/telegram-settings';
 import {
   resolveSection,
   type SettingsSection,
@@ -81,6 +83,8 @@ function SettingsPageInner() {
     deals: <DealsSettings />,
     members: <MembersTab />,
     api: <ApiKeysSettings />,
+    telegram: <TelegramSettings />,
+    'sub-accounts': <SubAccountsManager />,
   };
 
   return (

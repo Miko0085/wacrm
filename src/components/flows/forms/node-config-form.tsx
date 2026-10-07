@@ -173,6 +173,57 @@ export function NodeConfigForm({
         </>
       );
 
+    case "ai_decision":
+      return (
+        <>
+          <TextRow
+            label="Decision instruction"
+            value={(cfg as { instruction?: string }).instruction ?? ""}
+            onChange={(v) => onUpdateConfig({ instruction: v })}
+            rows={4}
+          />
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              Input variable
+            </label>
+            <Input
+              value={(cfg as { input_var?: string }).input_var ?? "last_customer_message"}
+              onChange={(e) =>
+                onUpdateConfig({
+                  input_var: e.target.value.replace(/[^a-zA-Z0-9_]/g, ""),
+                })
+              }
+              placeholder="last_customer_message"
+              className="bg-muted font-mono text-xs"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              Conversation context messages
+            </label>
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              value={(cfg as { context_messages?: number }).context_messages ?? 5}
+              onChange={(e) =>
+                onUpdateConfig({
+                  context_messages: Math.min(20, Math.max(1, Number(e.target.value) || 1)),
+                })
+              }
+              className="bg-muted"
+            />
+          </div>
+          <NextNodeRow
+            value={(cfg as { next_node_key?: string }).next_node_key ?? ""}
+            allNodes={allNodes}
+            currentKey={node.node_key}
+            onChange={(v) => onUpdateConfig({ next_node_key: v })}
+            label="Continue to"
+          />
+        </>
+      );
+
     case "condition":
       return (
         <ConditionForm

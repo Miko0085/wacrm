@@ -132,6 +132,15 @@ export function validateFlowForActivation(
     }
   }
 
+  for (const cycle of findAutoAdvanceCycles(nodes)) {
+    issues.push({
+      severity: "error",
+      scope: "node",
+      node_key: cycle[0],
+      message: `Auto-advancing cycle detected: ${cycle.join(" → ")}. Add a customer-input or terminal node to break the loop.`,
+    });
+  }
+
   return issues;
 }
 
@@ -584,6 +593,65 @@ function validateNode(
       break;
     }
 
+    case "ai_decision": {
+      const cfg = node.config as {
+        instruction?: string;
+        input_var?: string;
+        context_messages?: number;
+        next_node_key?: string;
+      };
+      if (!cfg.instruction?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "instruction",
+          message: "AI Decision needs an instruction.",
+        });
+      }
+      if (!cfg.input_var?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "input_var",
+          message: "AI Decision needs an input variable.",
+        });
+      }
+      if (
+        cfg.context_messages !== undefined &&
+        (!Number.isInteger(cfg.context_messages) ||
+          cfg.context_messages < 1 ||
+          cfg.context_messages > 20)
+      ) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "context_messages",
+          message: "AI Decision context must be between 1 and 20 messages.",
+        });
+      }
+      if (!cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "AI Decision must point to a next node.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `AI Decision points to non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
     case "condition": {
       const cfg = node.config as {
         subject?: "var" | "tag" | "contact_field";
@@ -751,6 +819,7 @@ function outgoingEdges(node: NodeInput): string[] {
     case "send_message":
     case "send_media":
     case "collect_input":
+    case "ai_decision":
     case "set_tag": {
       const cfg = node.config as { next_node_key?: string };
       return cfg.next_node_key ? [cfg.next_node_key] : [];
@@ -790,4 +859,59 @@ function outgoingEdges(node: NodeInput): string[] {
     default:
       return [];
   }
+}
+
+
+const AUTO_ADVANCING_TYPES = new Set([
+  "start",
+  "send_message",
+  "send_media",
+  "condition",
+  "ai_decision",
+  "set_tag",
+]);
+
+/**
+ * Returns cycles containing only auto-advancing nodes. These are dangerous
+ * because runtime traversal can send/execute repeatedly without waiting for a
+ * customer reply. Suspended/terminal nodes intentionally break the graph.
+ */
+export function findAutoAdvanceCycles(nodes: NodeInput[]): string[][] {
+  const byKey = new Map(nodes.map((node) => [node.node_key, node]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const stack: string[] = [];
+  const cycles = new Map<string, string[]>();
+
+  const visit = (key: string) => {
+    if (visited.has(key)) return;
+    const node = byKey.get(key);
+    if (!node || !AUTO_ADVANCING_TYPES.has(node.node_type)) {
+      visited.add(key);
+      return;
+    }
+
+    if (visiting.has(key)) {
+      const start = stack.indexOf(key);
+      if (start >= 0) {
+        const cycle = [...stack.slice(start), key];
+        const canonical = [...new Set(cycle.slice(0, -1))].sort().join("|");
+        if (!cycles.has(canonical)) cycles.set(canonical, cycle);
+      }
+      return;
+    }
+
+    visiting.add(key);
+    stack.push(key);
+    for (const next of outgoingEdges(node)) {
+      const nextNode = byKey.get(next);
+      if (nextNode && AUTO_ADVANCING_TYPES.has(nextNode.node_type)) visit(next);
+    }
+    stack.pop();
+    visiting.delete(key);
+    visited.add(key);
+  };
+
+  for (const node of nodes) visit(node.node_key);
+  return [...cycles.values()];
 }

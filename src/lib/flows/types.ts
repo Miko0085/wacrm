@@ -166,6 +166,13 @@ export interface ConditionNodeConfig {
   false_next: string;
 }
 
+export interface AiDecisionNodeConfig {
+  instruction: string;
+  input_var?: string;
+  context_messages?: number;
+  next_node_key: string;
+}
+
 export interface SetTagNodeConfig {
   mode: "add" | "remove";
   /** Tag UUID. The builder picks from the user's existing tags. */
@@ -192,6 +199,7 @@ export type FlowNodeConfig =
   | { node_type: "send_media"; config: SendMediaNodeConfig }
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
+  | { node_type: "ai_decision"; config: AiDecisionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
   | { node_type: "end"; config: EndNodeConfig };

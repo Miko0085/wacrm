@@ -151,6 +151,27 @@ export async function findOrCreateContact(
   return { id: created.id, created: true };
 }
 
+/** Update only explicitly supplied non-empty CRM fields on an existing contact. */
+export async function updateContactFields(
+  db: SupabaseClient,
+  accountId: string,
+  contactId: string,
+  input: Pick<ContactInput, 'name' | 'email' | 'company'>
+): Promise<void> {
+  const updates: Record<string, string> = {};
+  if (typeof input.name === 'string' && input.name.trim()) updates.name = input.name.trim();
+  if (typeof input.email === 'string' && input.email.trim()) updates.email = input.email.trim();
+  if (typeof input.company === 'string' && input.company.trim()) updates.company = input.company.trim();
+  if (Object.keys(updates).length === 0) return;
+
+  const { error } = await db
+    .from('contacts')
+    .update(updates)
+    .eq('id', contactId)
+    .eq('account_id', accountId);
+  if (error) throw new ContactError('Failed to update contact', 500);
+}
+
 /**
  * Replace a contact's tags to exactly match `tagNames` (case-
  * insensitive; missing tags are created). A no-op when `tagNames` is
@@ -212,6 +233,45 @@ export async function setContactTags(
         console.error('[api/v1/contacts] tag add failed:', error);
         throw new ContactError('Failed to update contact tags', 500);
       }
+    }
+  }
+}
+
+/**
+ * Add tags without removing any existing WACRM-native tags. This is the safe
+ * primitive for external CRM/cohort synchronization.
+ */
+export async function addContactTags(
+  db: SupabaseClient,
+  accountId: string,
+  auditUserId: string,
+  contactId: string,
+  tagNames: string[]
+): Promise<void> {
+  const uniqueNames = [...new Set(tagNames.map((t) => t.trim()).filter(Boolean))];
+  if (uniqueNames.length === 0) return;
+
+  const { tagIdByKey } = await resolveImportTagIds(db, {
+    accountId,
+    userId: auditUserId,
+    tagNames: uniqueNames,
+    canCreateTags: true,
+  });
+
+  const { data: current, error: readErr } = await db
+    .from('contact_tags')
+    .select('tag_id')
+    .eq('contact_id', contactId);
+  if (readErr) throw new ContactError('Failed to read contact tags', 500);
+  const existing = new Set((current ?? []).map((r) => r.tag_id as string));
+
+  for (const tagId of new Set(tagIdByKey.values())) {
+    if (existing.has(tagId)) continue;
+    try {
+      await addContactTagAndDispatch({ db, accountId, contactId, tagId });
+    } catch (error) {
+      console.error('[api/v1/contacts] additive tag sync failed:', error);
+      throw new ContactError('Failed to add contact tags', 500);
     }
   }
 }

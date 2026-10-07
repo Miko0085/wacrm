@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { validateFlowForActivation, reachableFromEntry } from "./validate";
+import {
+  validateFlowForActivation,
+  reachableFromEntry,
+  findAutoAdvanceCycles,
+} from "./validate";
 
 const validFlow = {
   name: "Welcome",
@@ -545,5 +549,142 @@ describe("reachableFromEntry", () => {
     ];
     const set = reachableFromEntry("a", nodes);
     expect(set).toEqual(new Set(["a", "b"]));
+  });
+});
+
+
+describe("findAutoAdvanceCycles", () => {
+  it("detects a cycle that can run without customer input", () => {
+    const nodes = [
+      { node_key: "a", node_type: "start", config: { next_node_key: "b" } },
+      { node_key: "b", node_type: "send_message", config: { text: "x", next_node_key: "c" } },
+      {
+        node_key: "c",
+        node_type: "condition",
+        config: {
+          subject: "var",
+          subject_key: "x",
+          operator: "present",
+          true_next: "b",
+          false_next: "end",
+        },
+      },
+      { node_key: "end", node_type: "end", config: {} },
+    ];
+
+    const cycles = findAutoAdvanceCycles(nodes);
+    expect(cycles.length).toBe(1);
+    expect(new Set(cycles[0])).toEqual(new Set(["b", "c"]));
+  });
+
+  it("allows loops that suspend for customer input", () => {
+    const nodes = [
+      { node_key: "a", node_type: "start", config: { next_node_key: "ask" } },
+      {
+        node_key: "ask",
+        node_type: "collect_input",
+        config: { prompt_text: "Again?", var_key: "answer", next_node_key: "a" },
+      },
+    ];
+
+    expect(findAutoAdvanceCycles(nodes)).toEqual([]);
+  });
+
+  it("surfaces auto cycles as activation errors", () => {
+    const nodes = [
+      { node_key: "a", node_type: "start", config: { next_node_key: "b" } },
+      { node_key: "b", node_type: "send_message", config: { text: "loop", next_node_key: "a" } },
+    ];
+    const issues = validateFlowForActivation(
+      { ...validFlow, entry_node_id: "a" },
+      nodes,
+    );
+    expect(
+      issues.some((issue) =>
+        issue.severity === "error" && issue.message.includes("Auto-advancing cycle"),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("findAutoAdvanceCycles — customer-input loops vs runaway loops", () => {
+  const msg = (key: string, next: string) => ({
+    node_key: key,
+    node_type: "send_message",
+    config: { text: "hi", next_node_key: next },
+  });
+
+  it("rejects A send_message -> B, B condition(true) -> A", () => {
+    const cycles = findAutoAdvanceCycles([
+      { node_key: "start", node_type: "start", config: { next_node_key: "A" } },
+      msg("A", "B"),
+      {
+        node_key: "B",
+        node_type: "condition",
+        config: { subject: "var", subject_key: "x", operator: "equals", value: "1", true_next: "A", false_next: "end" },
+      },
+      { node_key: "end", node_type: "end", config: {} },
+    ]);
+    expect(cycles).toHaveLength(1);
+    expect(new Set(cycles[0])).toEqual(new Set(["A", "B"]));
+  });
+
+  it("rejects a send_message self-loop", () => {
+    expect(findAutoAdvanceCycles([msg("A", "A")])).toHaveLength(1);
+  });
+
+  it.each(["send_media", "set_tag", "ai_decision"])(
+    "rejects a cycle that runs through a %s node",
+    (type) => {
+      const cycles = findAutoAdvanceCycles([
+        msg("A", "B"),
+        { node_key: "B", node_type: type, config: { next_node_key: "A" } },
+      ]);
+      expect(cycles).toHaveLength(1);
+    },
+  );
+
+  it("allows a conversational loop that waits for customer input (collect_input)", () => {
+    expect(
+      findAutoAdvanceCycles([
+        msg("A", "ask"),
+        { node_key: "ask", node_type: "collect_input", config: { prompt_text: "?", var_key: "v", next_node_key: "A" } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("allows a menu loop through send_buttons / send_list", () => {
+    expect(
+      findAutoAdvanceCycles([
+        msg("A", "menu"),
+        {
+          node_key: "menu",
+          node_type: "send_buttons",
+          config: { buttons: [{ id: "1", title: "Again", next_node_key: "A" }] },
+        },
+      ]),
+    ).toEqual([]);
+    expect(
+      findAutoAdvanceCycles([
+        msg("A", "list"),
+        {
+          node_key: "list",
+          node_type: "send_list",
+          config: { sections: [{ rows: [{ id: "r", title: "Again", next_node_key: "A" }] }] },
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("allows a diamond that merges without looping back", () => {
+    expect(
+      findAutoAdvanceCycles([
+        { node_key: "start", node_type: "start", config: { next_node_key: "c" } },
+        { node_key: "c", node_type: "condition", config: { true_next: "x", false_next: "y" } },
+        msg("x", "end"),
+        msg("y", "end"),
+        { node_key: "end", node_type: "end", config: {} },
+      ]),
+    ).toEqual([]);
   });
 });

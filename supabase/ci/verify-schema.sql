@@ -42,6 +42,27 @@ BEGIN
     RAISE EXCEPTION 'public.accounts is missing — migration 017 did not apply';
   END IF;
 
+  -- Orchestration layer (053-058): queues, leases and managed-seed RPCs.
+  IF to_regclass('public.inbound_debounce_jobs') IS NULL
+     OR to_regclass('public.business_events') IS NULL
+     OR to_regclass('public.telegram_connections') IS NULL THEN
+    RAISE EXCEPTION 'orchestration tables are missing — migrations 053-056 did not apply';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'automation_pending_executions' AND column_name = 'locked_at'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'business_events' AND column_name = 'chain_depth'
+  ) THEN
+    RAISE EXCEPTION 'migration 058 columns are missing';
+  END IF;
+  IF to_regprocedure('public.upsert_managed_flow(uuid,uuid,text,jsonb,jsonb)') IS NULL
+     OR to_regprocedure('public.upsert_managed_automation(uuid,uuid,text,jsonb,jsonb)') IS NULL
+     OR to_regprocedure('public.cleanup_orchestration_data(integer,integer,integer,integer)') IS NULL THEN
+    RAISE EXCEPTION 'migration 058 functions are missing';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

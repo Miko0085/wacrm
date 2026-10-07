@@ -24,6 +24,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { queueInboundTextTurn } from '@/lib/whatsapp/inbound-debounce'
 
 // ------------------------------------------------------------
 // Normalized shapes every provider's webhook route must produce.
@@ -133,73 +134,70 @@ export function isValidStatusTransition(current: string, incoming: string): bool
  */
 export async function handleStatusUpdate(
   db: SupabaseClient,
+  accountId: string,
   event: NormalizedStatusEvent,
 ): Promise<void> {
-  // 1) Mirror onto messages (legacy behavior). No `.select()`:
-  //    message_id is NOT unique (Meta ids repeat across numbers), so
-  //    this updates 0..N rows and must not assume a single row.
-  const { error: msgErr } = await db
+  // Provider message ids are not globally unique across WhatsApp numbers.
+  // Resolve account-owned rows first, then update by internal UUID so a
+  // callback can never mutate another tenant's messages.
+  const { data: messageRows, error: msgFetchErr } = await db
     .from('messages')
-    .update({ status: event.status })
+    .select('id, conversation_id, status, conversations!inner(account_id)')
     .eq('message_id', event.providerMessageId)
+    .eq('conversations.account_id', accountId)
 
-  if (msgErr) {
-    console.error('[inbound-pipeline] Error updating message status:', msgErr)
+  if (msgFetchErr) {
+    console.error('[inbound-pipeline] Error resolving message status rows:', msgFetchErr)
+  } else {
+    for (const row of messageRows ?? []) {
+      if (!isValidStatusTransition(String(row.status ?? ''), event.status)) continue
+      const { error: msgErr } = await db
+        .from('messages')
+        .update({ status: event.status })
+        .eq('id', row.id)
+      if (msgErr) {
+        console.error('[inbound-pipeline] Error updating message status:', msgErr)
+      }
+    }
   }
 
-  // 2) Mirror onto broadcast_recipients via whatsapp_message_id. The
-  //    aggregate trigger on broadcast_recipients re-derives the parent
-  //    broadcast's sent/delivered/read/failed counts automatically.
+  // Mirror onto account-owned broadcast recipients. The aggregate trigger on
+  // broadcast_recipients re-derives the parent campaign counters.
   const tsIso = new Date(event.timestampMs).toISOString()
-
-  const { data: recipient, error: recFetchErr } = await db
+  const { data: recipients, error: recFetchErr } = await db
     .from('broadcast_recipients')
-    .select('id, status')
+    .select('id, status, broadcasts!inner(account_id)')
     .eq('whatsapp_message_id', event.providerMessageId)
-    .maybeSingle()
+    .eq('broadcasts.account_id', accountId)
+    .order('created_at', { ascending: false })
 
   if (recFetchErr) {
     console.error('[inbound-pipeline] Error fetching broadcast recipient:', recFetchErr)
-  } else if (
-    recipient &&
-    isValidStatusTransition(recipient.status, event.status)
-  ) {
-    const update: Record<string, unknown> = { status: event.status }
-    if (event.status === 'sent') update.sent_at = tsIso
-    if (event.status === 'delivered') update.delivered_at = tsIso
-    if (event.status === 'read') update.read_at = tsIso
+  } else {
+    for (const recipient of recipients ?? []) {
+      if (!isValidStatusTransition(recipient.status, event.status)) continue
+      const update: Record<string, unknown> = { status: event.status }
+      if (event.status === 'sent') update.sent_at = tsIso
+      if (event.status === 'delivered') update.delivered_at = tsIso
+      if (event.status === 'read') update.read_at = tsIso
 
-    const { error: recUpdateErr } = await db
-      .from('broadcast_recipients')
-      .update(update)
-      .eq('id', recipient.id)
-
-    if (recUpdateErr) {
-      console.error('[inbound-pipeline] Error updating broadcast recipient status:', recUpdateErr)
+      const { error: recUpdateErr } = await db
+        .from('broadcast_recipients')
+        .update(update)
+        .eq('id', recipient.id)
+      if (recUpdateErr) {
+        console.error('[inbound-pipeline] Error updating broadcast recipient status:', recUpdateErr)
+      }
     }
   }
 
-  // 3) Webhook fan-out for messages we store (inbox / API sends). Runs
-  //    last so a slow subscriber can't delay the mirrors above. Bounded
-  //    to one row (message_id isn't unique) purely to resolve the
-  //    owning account for delivery.
-  const { data: msgRow } = await db
-    .from('messages')
-    .select('conversation_id, conversations(account_id)')
-    .eq('message_id', event.providerMessageId)
-    .limit(1)
-    .maybeSingle()
-
-  if (msgRow) {
-    const conv = msgRow.conversations as unknown as { account_id: string } | null
-    const accountId = conv?.account_id
-    if (accountId) {
-      await dispatchWebhookEvent(db, accountId, 'message.status_updated', {
-        whatsapp_message_id: event.providerMessageId,
-        conversation_id: msgRow.conversation_id,
-        status: event.status,
-      })
-    }
+  const firstMessage = (messageRows ?? [])[0]
+  if (firstMessage) {
+    await dispatchWebhookEvent(db, accountId, 'message.status_updated', {
+      whatsapp_message_id: event.providerMessageId,
+      conversation_id: firstMessage.conversation_id,
+      status: event.status,
+    })
   }
 }
 
@@ -628,6 +626,64 @@ export async function finishProcessingInboundMessage(
   // an account with zero automations configured.
   await applyStopKeywordIfMatched(db, accountId, contactRecord.id, msg.contentText)
 
+  const inboundText = msg.contentText ?? ''
+
+  // Free-text turns are aggregated durably before any Flow/Automation/AI
+  // decisioning. This avoids firing the LLM four times when a customer
+  // sends "Yes" / "for investment" / "2M AED" / "what yield?" as four
+  // separate WhatsApp bubbles. Interactive replies remain immediate.
+  if (
+    contentType === 'text' &&
+    !msg.interactiveReplyId &&
+    inboundText.trim()
+  ) {
+    try {
+      // Relationship event is safe to dispatch immediately and must fire
+      // exactly once; message-level reasoning waits for the debounce job.
+      if (wasContactCreated) {
+        await runAutomationsForTrigger({
+          accountId,
+          triggerType: 'new_contact_created',
+          contactId: contactRecord.id,
+          context: {
+            message_text: inboundText,
+            conversation_id: conversation.id,
+          },
+        })
+      }
+
+      await queueInboundTextTurn({
+        db,
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        providerMessageId: msg.providerMessageId,
+        text: inboundText,
+        isFirstInbound: isFirstInboundMessage,
+        delaySeconds: 35,
+      })
+
+      // Public message.received remains per-message and immediate. Only the
+      // conversational decision layer is debounced.
+      await dispatchWebhookEvent(db, accountId, 'message.received', {
+        conversation_id: conversation.id,
+        contact_id: contactRecord.id,
+        whatsapp_message_id: msg.providerMessageId,
+        content_type: contentType,
+        text: msg.contentText,
+      })
+      return
+    } catch (err) {
+      // Fail open to the previous immediate behavior. A migration/cron
+      // deployment issue must not strand customer replies.
+      console.error(
+        '[inbound-pipeline] debounce queue failed; using immediate dispatch:',
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
+
   const flowResult = await dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,
@@ -650,7 +706,6 @@ export async function finishProcessingInboundMessage(
   })
   const flowConsumed = flowResult.consumed
 
-  const inboundText = msg.contentText ?? ''
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -666,8 +721,11 @@ export async function finishProcessingInboundMessage(
   }
   if (wasContactCreated) automationTriggers.unshift('new_contact_created')
   if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+  // Whether a deterministic responder actually tried to answer this turn;
+  // decided from the real dispatch results (see dispatchInboundToAiReply).
+  let deterministicResponderHandled = false
   for (const triggerType of automationTriggers) {
-    await runAutomationsForTrigger({
+    const dispatch = await runAutomationsForTrigger({
       accountId,
       triggerType,
       contactId: contactRecord.id,
@@ -676,7 +734,11 @@ export async function finishProcessingInboundMessage(
         conversation_id: conversation.id,
         interactive_reply_id: msg.interactiveReplyId ?? undefined,
       },
-    }).catch((err) => console.error('[inbound-pipeline] automations dispatch failed:', err))
+    }).catch((err) => {
+      console.error('[inbound-pipeline] automations dispatch failed:', err)
+      return null
+    })
+    if (dispatch?.customer_facing_attempted) deterministicResponderHandled = true
   }
 
   if (!flowConsumed && !msg.interactiveReplyId && inboundText.trim()) {
@@ -685,6 +747,7 @@ export async function finishProcessingInboundMessage(
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
+      deterministicResponderHandled,
     })
   }
 

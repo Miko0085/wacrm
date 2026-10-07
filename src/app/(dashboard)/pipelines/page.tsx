@@ -77,13 +77,14 @@ export default function PipelinesPage() {
     const { data, error } = await supabase
       .from("pipelines")
       .select("*")
+      .eq("account_id", accountId!)
       .order("created_at");
     if (error) {
       console.error("Failed to load pipelines:", error.message);
       return [];
     }
     return data ?? [];
-  }, [supabase]);
+  }, [supabase, accountId]);
 
   const loadStages = useCallback(
     async (pipelineId: string) => {
@@ -94,7 +95,7 @@ export default function PipelinesPage() {
         .order("position");
       return data ?? [];
     },
-    [supabase],
+    [supabase, accountId],
   );
 
   const loadDeals = useCallback(
@@ -103,10 +104,11 @@ export default function PipelinesPage() {
         .from("deals")
         .select("*, contact:contacts(*), assignee:profiles!deals_assigned_to_fkey(*)")
         .eq("pipeline_id", pipelineId)
+        .eq("account_id", accountId!)
         .order("created_at", { ascending: false });
       return (data ?? []) as Deal[];
     },
-    [supabase],
+    [supabase, accountId],
   );
 
   const seedDefaultPipeline = useCallback(async (): Promise<Pipeline | null> => {
@@ -223,13 +225,14 @@ export default function PipelinesPage() {
       const { error } = await supabase
         .from("deals")
         .update({ stage_id: newStageId })
-        .eq("id", dealId);
+        .eq("id", dealId)
+        .eq("account_id", accountId!);
       if (error) {
         toast.error(t("toastFailedMoveDeal"));
         refreshDeals();
       }
     },
-    [supabase, refreshDeals, t],
+    [supabase, refreshDeals, t, accountId],
   );
 
   const handleAddDeal = useCallback(

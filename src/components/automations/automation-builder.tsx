@@ -26,6 +26,9 @@ import {
   Hourglass,
   GitBranch,
   Webhook,
+  RadioTower,
+  Send,
+  PlayCircle,
   CircleSlash,
   Zap,
   Loader2,
@@ -33,6 +36,7 @@ import {
   ArrowUp,
   MousePointerClick,
   List,
+  ImageIcon,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -60,6 +64,8 @@ import {
   blankButtonsPayload,
   blankListPayload,
 } from "@/components/interactive/interactive-builder"
+import { AiClassificationFields } from "@/components/automations/ai-classification-fields"
+import { AutomationMediaFields } from "@/components/automations/automation-media-fields"
 import { interactivePayloadPreviewText } from "@/lib/whatsapp/interactive"
 import { createClient } from "@/lib/supabase/client"
 import {
@@ -73,12 +79,7 @@ import {
 } from "@/lib/automations/builder-tree"
 import { cn } from "@/lib/utils"
 
-// ------------------------------------------------------------
-// Types (builder-local — mirror the flattened rows we POST)
-// ------------------------------------------------------------
-
 export interface BuilderStep {
-  /** Client id; the API assigns real UUIDs server-side. */
   cid: string
   step_type: AutomationStepType
   step_config: Record<string, unknown>
@@ -95,14 +96,9 @@ export interface BuilderInitial {
   steps: BuilderStep[]
 }
 
-// ------------------------------------------------------------
-// Step metadata — one source of truth for icon + label + border color
-// ------------------------------------------------------------
-
 interface StepMeta {
   label: string
   icon: typeof Zap
-  /** Left-border accent color per spec. */
   border: string
 }
 
@@ -111,6 +107,7 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   send_buttons: { label: "send_buttons", icon: MousePointerClick, border: "border-l-primary" },
   send_list: { label: "send_list", icon: List, border: "border-l-primary" },
   send_template: { label: "send_template", icon: FileText, border: "border-l-primary" },
+  send_media: { label: "send_media", icon: ImageIcon, border: "border-l-primary" },
   add_tag: { label: "add_tag", icon: Tag, border: "border-l-primary" },
   remove_tag: { label: "remove_tag", icon: TagIcon, border: "border-l-primary" },
   assign_conversation: { label: "assign_conversation", icon: UserCheck, border: "border-l-primary" },
@@ -118,6 +115,10 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   create_deal: { label: "create_deal", icon: Briefcase, border: "border-l-primary" },
   wait: { label: "wait", icon: Hourglass, border: "border-l-border" },
   condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
+  ai_classification: { label: "ai_classification", icon: Zap, border: "border-l-violet-500" },
+  emit_business_event: { label: "emit_business_event", icon: RadioTower, border: "border-l-cyan-500" },
+  send_telegram: { label: "send_telegram", icon: Send, border: "border-l-sky-500" },
+  start_flow: { label: "start_flow", icon: PlayCircle, border: "border-l-emerald-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
 }
@@ -127,6 +128,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "send_buttons",
   "send_list",
   "send_template",
+  "send_media",
   "add_tag",
   "remove_tag",
   "assign_conversation",
@@ -134,6 +136,10 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "create_deal",
   "wait",
   "condition",
+  "ai_classification",
+  "emit_business_event",
+  "send_telegram",
+  "start_flow",
   "send_webhook",
   "close_conversation",
 ]
@@ -147,7 +153,20 @@ const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
   { value: "conversation_assigned" },
   { value: "tag_added" },
   { value: "time_based" },
+  { value: "business_event" },
 ]
+
+function isBranchingType(type: AutomationStepType | string): boolean {
+  return type === "condition" || type === "ai_classification"
+}
+
+function stepDisplayLabel(
+  type: AutomationStepType,
+  t: ReturnType<typeof useTranslations>,
+): string {
+  if (type === "ai_classification") return "AI Decision"
+  return t(`steps.${STEP_META[type].label}`)
+}
 
 function cid(): string {
   return (
@@ -158,11 +177,6 @@ function cid(): string {
   )
 }
 
-// The send_buttons / send_list step_config IS an InteractiveMessagePayload,
-// but step_config is typed generically as Record<string, unknown>. These two
-// helpers hold the single unavoidable structural cast in one place so a
-// payload-shape change has one seam to update instead of four scattered
-// `as unknown as` sites.
 function toStepConfig(p: InteractiveMessagePayload): Record<string, unknown> {
   return p as unknown as Record<string, unknown>
 }
@@ -180,6 +194,8 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return toStepConfig(blankListPayload())
     case "send_template":
       return { template_name: "", language: "en_US" }
+    case "send_media":
+      return { media_type: "image", media_url: "", caption: "", filename: "" }
     case "add_tag":
     case "remove_tag":
       return { tag_id: "" }
@@ -193,6 +209,21 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return { amount: 1, unit: "hours" }
     case "condition":
       return { subject: "tag_presence", operand: "", value: "" }
+    case "ai_classification":
+      return {
+        instruction:
+          "Understand the customer message, identify all relevant intents, extract useful qualification data, and decide whether a human is required.",
+        input_template: "{{message.text}}",
+        context_messages: 5,
+        positive_intent: "positive",
+        min_score: 60,
+      }
+    case "emit_business_event":
+      return { event_type: "human_handoff_requested", source: "automation", payload_template: "{}" }
+    case "send_telegram":
+      return { connection_id: "", chat_id: "", message: "", parse_mode: "HTML" }
+    case "start_flow":
+      return { flow_id: "" }
     case "send_webhook":
       return { url: "", headers: {}, body_template: "" }
     case "close_conversation":
@@ -202,16 +233,6 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
   }
 }
 
-// ------------------------------------------------------------
-// Account resources (tags, members, approved templates, pipelines)
-//
-// Loaded once at the builder root and shared via context so the
-// tag / agent / template pickers below can offer existing resources
-// by name instead of asking the user to paste raw UUIDs. Every picker
-// falls back to a raw input when its list is empty (fresh account or
-// an older deployment), so an automation is always authorable.
-// ------------------------------------------------------------
-
 interface AutomationResources {
   tags: TagRecord[]
   members: AccountMember[]
@@ -219,6 +240,20 @@ interface AutomationResources {
   customFields: CustomField[]
   pipelines: PipelineOption[]
   stages: PipelineStageOption[]
+  telegramConnections: TelegramConnectionOption[]
+  flows: FlowOption[]
+}
+
+interface TelegramConnectionOption {
+  id: string
+  name: string
+  is_active: boolean
+}
+
+interface FlowOption {
+  id: string
+  name: string
+  status: string
 }
 
 interface PipelineOption {
@@ -240,6 +275,8 @@ const ResourcesContext = createContext<AutomationResources>({
   customFields: [],
   pipelines: [],
   stages: [],
+  telegramConnections: [],
+  flows: [],
 })
 
 function useResources(): AutomationResources {
@@ -253,18 +290,23 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
   const [customFields, setCustomFields] = useState<CustomField[]>([])
   const [pipelines, setPipelines] = useState<PipelineOption[]>([])
   const [stages, setStages] = useState<PipelineStageOption[]>([])
+  const [telegramConnections, setTelegramConnections] = useState<TelegramConnectionOption[]>([])
+  const [flows, setFlows] = useState<FlowOption[]>([])
 
   useEffect(() => {
     let cancelled = false
     const supabase = createClient()
 
-    // Tags, templates and custom fields come straight from the DB — RLS
-    // scopes them to the caller's account. Only APPROVED templates can
-    // actually be sent (anything else 400s at send time), matching the
-    // broadcast picker.
     void (async () => {
-      const [tagsRes, templatesRes, customFieldsRes, pipelinesRes, stagesRes] =
-        await Promise.all([
+      const [
+        tagsRes,
+        templatesRes,
+        customFieldsRes,
+        pipelinesRes,
+        stagesRes,
+        telegramRes,
+        flowsRes,
+      ] = await Promise.all([
           supabase.from("tags").select("*").order("name"),
           supabase
             .from("message_templates")
@@ -277,6 +319,16 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
             .from("pipeline_stages")
             .select("id, name, pipeline_id, position")
             .order("position"),
+          supabase
+            .from("telegram_connections")
+            .select("id, name, is_active")
+            .eq("is_active", true)
+            .order("name"),
+          supabase
+            .from("flows")
+            .select("id, name, status")
+            .neq("status", "archived")
+            .order("name"),
         ])
       if (cancelled) return
       setTags((tagsRes.data as TagRecord[] | null) ?? [])
@@ -284,11 +336,12 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
       setCustomFields((customFieldsRes.data as CustomField[] | null) ?? [])
       setPipelines((pipelinesRes.data as PipelineOption[] | null) ?? [])
       setStages((stagesRes.data as PipelineStageOption[] | null) ?? [])
+      setTelegramConnections(
+        (telegramRes.data as TelegramConnectionOption[] | null) ?? [],
+      )
+      setFlows((flowsRes.data as FlowOption[] | null) ?? [])
     })()
 
-    // Members go through the API so we inherit its email-visibility
-    // rules (agents/viewers don't see emails). Unreachable on older
-    // deployments → pickers fall back to a raw agent-id input.
     void (async () => {
       try {
         const res = await fetch("/api/account/members", { cache: "no-store" })
@@ -296,7 +349,7 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
         const json = (await res.json()) as { members?: AccountMember[] }
         if (!cancelled) setMembers(json.members ?? [])
       } catch {
-        // Members endpoint absent — caller falls back to raw input.
+        // Older deployments may not expose this endpoint.
       }
     })()
 
@@ -307,7 +360,16 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
 
   return (
     <ResourcesContext.Provider
-      value={{ tags, members, templates, customFields, pipelines, stages }}
+      value={{
+        tags,
+        members,
+        templates,
+        customFields,
+        pipelines,
+        stages,
+        telegramConnections,
+        flows,
+      }}
     >
       {children}
     </ResourcesContext.Provider>
@@ -317,8 +379,6 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
 const SELECT_CLASS =
   "w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
 
-/** Tag dropdown by name + color, storing the tag's id. Falls back to a
- *  raw id input when no tags exist yet. */
 function TagSelect({
   value,
   onChange,
@@ -358,8 +418,6 @@ function TagSelect({
             {tg.name}
           </option>
         ))}
-        {/* Preserve a saved tag that's since been deleted so editing an
-            existing automation doesn't silently drop it. */}
         {value && !selected && (
           <option value={value}>{t("tags.unknown", { id: value })}</option>
         )}
@@ -368,10 +426,78 @@ function TagSelect({
   )
 }
 
-/** Contact-field dropdown for "Update Contact Field": built-in columns plus
- *  any account custom fields (stored as `custom:<id>`). A saved custom field
- *  that's since been deleted is preserved as a labelled option so editing an
- *  existing automation doesn't silently drop it. */
+function TelegramConnectionSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { telegramConnections } = useResources()
+  if (telegramConnections.length === 0) {
+    return (
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Connect a bot in Settings → Telegram"
+        className="bg-muted font-mono text-foreground"
+      />
+    )
+  }
+  const selected = telegramConnections.find((item) => item.id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="">Select Telegram bot…</option>
+      {telegramConnections.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name}
+        </option>
+      ))}
+      {value && !selected && <option value={value}>{value} (unknown)</option>}
+    </select>
+  )
+}
+
+function FlowSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { flows } = useResources()
+  if (flows.length === 0) {
+    return (
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Flow UUID"
+        className="bg-muted font-mono text-foreground"
+      />
+    )
+  }
+  const selected = flows.find((item) => item.id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="">Select flow…</option>
+      {flows.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name} ({item.status})
+        </option>
+      ))}
+      {value && !selected && <option value={value}>{value} (unknown)</option>}
+    </select>
+  )
+}
+
 function ContactFieldSelect({
   value,
   onChange,
@@ -411,8 +537,6 @@ function ContactFieldSelect({
   )
 }
 
-/** Agent dropdown by name, storing the member's user_id. Falls back to
- *  a raw id input when the member list is unavailable. */
 function AgentSelect({
   value,
   onChange,
@@ -453,8 +577,6 @@ function AgentSelect({
   )
 }
 
-/** Pipeline + stage picker for Create Deal. The automation stores ids because
- *  the engine writes directly to deals, but authors should choose by name. */
 function DealPipelineFields({
   pipelineId,
   stageId,
@@ -504,9 +626,7 @@ function DealPipelineFields({
           value={pipelineId}
           onChange={(e) => {
             const nextPipelineId = e.target.value
-            const firstStage = stages.find(
-              (s) => s.pipeline_id === nextPipelineId
-            )
+            const firstStage = stages.find((s) => s.pipeline_id === nextPipelineId)
             onChange({
               pipeline_id: nextPipelineId,
               stage_id: firstStage?.id ?? "",
@@ -551,9 +671,6 @@ function DealPipelineFields({
   )
 }
 
-/** Template dropdown showing approved templates by name + language,
- *  storing both template_name and language. Falls back to manual name +
- *  language inputs when no approved templates are synced yet. */
 function SendTemplateFields({
   templateName,
   language,
@@ -573,18 +690,14 @@ function SendTemplateFields({
         <FieldBlock label={t("templates.templateNameLabel")}>
           <Input
             value={templateName}
-            onChange={(e) =>
-              onChange({ template_name: e.target.value, language })
-            }
+            onChange={(e) => onChange({ template_name: e.target.value, language })}
             className="bg-muted text-foreground"
           />
         </FieldBlock>
         <FieldBlock label={t("templates.languageLabel")}>
           <Input
             value={language}
-            onChange={(e) =>
-              onChange({ template_name: templateName, language: e.target.value })
-            }
+            onChange={(e) => onChange({ template_name: templateName, language: e.target.value })}
             className="bg-muted text-foreground"
           />
         </FieldBlock>
@@ -592,8 +705,6 @@ function SendTemplateFields({
     )
   }
 
-  // Encode name + language in the option value so two templates that
-  // share a name across languages stay distinct.
   const toValue = (name: string, lang: string) => `${name}::${lang}`
   const current = templateName ? toValue(templateName, language) : ""
   const hasMatch = templates.some(
@@ -629,10 +740,6 @@ function SendTemplateFields({
   )
 }
 
-// ------------------------------------------------------------
-// Main builder component
-// ------------------------------------------------------------
-
 export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
   const router = useRouter()
   const t = useTranslations("Automations.builder")
@@ -645,8 +752,6 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
     setState((s) => ({ ...s, [key]: value }))
   }
 
-  // --- Step tree mutations (immutable) ---
-
   function updateStep(path: StepPath, updater: (s: BuilderStep) => BuilderStep) {
     setState((s) => ({ ...s, steps: mapAtPath(s.steps, path, updater) }))
   }
@@ -656,7 +761,7 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
       cid: cid(),
       step_type: type,
       step_config: blankConfig(type),
-      branches: type === "condition" ? { yes: [], no: [] } : undefined,
+      branches: isBranchingType(type) ? { yes: [], no: [] } : undefined,
     }
     setState((s) => ({ ...s, steps: insertAt(s.steps, parent, index, node) }))
     setExpandedId(node.cid)
@@ -696,11 +801,7 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
 
       const body = await res.json().catch(() => ({}))
       if (!res.ok) {
-        // If the server blocked activation with validation issues,
-        // surface the first concrete problem so the user can fix it
-        // without opening DevTools for the full array.
-        const firstIssue: { path?: string; message?: string } | undefined =
-          body?.issues?.[0]
+        const firstIssue: { path?: string; message?: string } | undefined = body?.issues?.[0]
         if (firstIssue?.message) {
           toast.error(firstIssue.message, {
             description: firstIssue.path ? `at ${firstIssue.path}` : undefined,
@@ -721,9 +822,6 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-background">
-      {/* Top bar. At sub-sm widths the "Active" label is hidden and the
-          switch moves to the right of the save button, so the name input
-          gets maximum width. */}
       <header className="flex flex-shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 py-3 sm:gap-3 sm:px-4">
         <button
           type="button"
@@ -757,7 +855,6 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
         </Button>
       </header>
 
-      {/* Canvas */}
       <div className="relative flex-1 overflow-y-auto">
         <div className="absolute inset-0 bg-[radial-gradient(circle,var(--border)_1px,transparent_1px)] [background-size:20px_20px] pointer-events-none" />
         <div className="relative mx-auto flex max-w-2xl flex-col items-center gap-0 px-4 py-10">
@@ -787,10 +884,6 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
   )
 }
 
-// ------------------------------------------------------------
-// Trigger card
-// ------------------------------------------------------------
-
 function TriggerCard({
   type,
   config,
@@ -806,8 +899,6 @@ function TriggerCard({
 }) {
   const [open, setOpen] = useState(false)
   return (
-    // Card width: full on mobile, fixed 320px on sm+. The canvas wrapper
-    // (max-w-2xl + px-4) keeps this tidy on tablet/desktop.
     <div className="z-10 w-full max-w-[320px] sm:w-80">
       <div className="rounded-lg border border-border border-l-4 border-l-blue-500 bg-card shadow-lg">
         <button
@@ -824,9 +915,7 @@ function TriggerCard({
               {t(`triggers.${type}.label`)}
             </div>
           </div>
-          <ChevronDown
-            className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")}
-          />
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")} />
         </button>
         {open && (
           <div className="space-y-3 border-t border-border px-4 py-3">
@@ -861,13 +950,32 @@ function TriggerCard({
             )}
             {type === "tag_added" && (
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Tag
-                </label>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Tag</label>
                 <TagSelect
                   value={(config.tag_id as string) ?? ""}
                   onChange={(v) => onConfigChange({ ...config, tag_id: v })}
                   t={t}
+                />
+              </div>
+            )}
+            {type === "business_event" && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Business event types
+                </label>
+                <Input
+                  placeholder="human_handoff_requested, call_requested"
+                  value={Array.isArray(config.event_types) ? (config.event_types as string[]).join(", ") : ""}
+                  onChange={(e) =>
+                    onConfigChange({
+                      ...config,
+                      event_types: e.target.value
+                        .split(",")
+                        .map((v) => v.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  className="bg-muted text-foreground"
                 />
               </div>
             )}
@@ -879,14 +987,10 @@ function TriggerCard({
                 <Input
                   placeholder="Cron expression or HH:mm"
                   value={(config.schedule as string) ?? ""}
-                  onChange={(e) =>
-                    onConfigChange({ ...config, schedule: e.target.value })
-                  }
+                  onChange={(e) => onConfigChange({ ...config, schedule: e.target.value })}
                   className="bg-muted text-foreground"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {t("scheduleHint")}
-                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{t("scheduleHint")}</p>
               </div>
             )}
           </div>
@@ -906,19 +1010,8 @@ function KeywordMatchConfig({
   t: ReturnType<typeof useTranslations>
 }) {
   const keywords = config?.keywords ?? []
-  // Keep a local draft string so the comma and trailing space aren't
-  // stripped on every keystroke (which made multi-word, comma-separated
-  // entry like "SEO, search engine optimization" impossible to type).
-  // We only parse into the keywords array on blur, then re-display the
-  // cleaned, rejoined form. Seeded once on mount; this component remounts
-  // when the trigger type changes, so the seed stays in sync.
   const [draft, setDraft] = useState(keywords.join(", "))
 
-  // Persist the default the <select> displays. The dropdown falls back to
-  // "contains" for display, but leaving it untouched would otherwise omit
-  // match_type from the saved config — and activation validation then
-  // rejected it (trigger.match_type). Seed once on mount; the component
-  // remounts when the trigger type changes, matching the keywords draft.
   useEffect(() => {
     if (config?.match_type == null) {
       onChange({ ...config, match_type: "contains" })
@@ -938,9 +1031,7 @@ function KeywordMatchConfig({
   return (
     <div className="space-y-2">
       <div>
-        <label className="mb-1 block text-xs font-medium text-muted-foreground">
-          {t("keywords")}
-        </label>
+        <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("keywords")}</label>
         <Input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -973,13 +1064,8 @@ function KeywordMatchConfig({
           <option value="word">{t("config.matchWord")}</option>
           <option value="exact">{t("config.matchExact")}</option>
         </select>
-        {/* Only worth explaining for `word` — "contains" and "exact" read
-            for themselves, and this is the one that changes which messages
-            fire an automation in a way that isn't obvious. */}
         {config?.match_type === "word" && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("config.matchWordHint")}
-          </p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("config.matchWordHint")}</p>
         )}
       </div>
     </div>
@@ -996,8 +1082,6 @@ function InteractiveReplyConfig({
   t: ReturnType<typeof useTranslations>
 }) {
   const ids = (config?.reply_ids as string[] | undefined) ?? []
-  // Same local-draft-then-commit pattern as KeywordMatchConfig so
-  // commas + spaces survive keystrokes.
   const [draft, setDraft] = useState(ids.join(", "))
 
   function commit() {
@@ -1011,9 +1095,7 @@ function InteractiveReplyConfig({
 
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium text-muted-foreground">
-        {t("replyIds")}
-      </label>
+      <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("replyIds")}</label>
       <Input
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -1032,19 +1114,9 @@ function InteractiveReplyConfig({
   )
 }
 
-// ------------------------------------------------------------
-// Step list + card + connectors
-// ------------------------------------------------------------
-
 interface StepListProps {
   steps: BuilderStep[]
-  /**
-   * Path of the step that owns this list — `[]` for the root canvas,
-   * the condition's own path for a branch column. Combined with
-   * `scope` by `childPath` to address each child.
-   */
   basePath: StepPath
-  /** Which bucket this list reads and writes. */
   scope: ParentScope
   expandedId: string | null
   setExpandedId: (id: string | null) => void
@@ -1060,17 +1132,34 @@ function StepList(props: StepListProps) {
   return (
     <div className="flex w-full flex-col items-center">
       <AddButton onPick={(t) => props.addStepAt(scope, 0, t)} />
-      {steps.map((step, idx) => (
-        <StepRenderer
-          key={step.cid}
-          step={step}
-          index={idx}
-          total={steps.length}
-          basePath={basePath}
-          scope={scope}
-          {...rest}
-        />
-      ))}
+      {steps.map((step, idx) => {
+        const followsRootBranch =
+          scope.kind === "root" &&
+          idx > 0 &&
+          isBranchingType(steps[idx - 1]?.step_type ?? "")
+
+        return (
+          <div key={step.cid} className="contents">
+            {followsRootBranch && (
+              <div className="my-2 flex w-full max-w-[600px] items-center gap-2">
+                <div className="h-px flex-1 bg-border" />
+                <div className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                  After YES / NO · always runs
+                </div>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            )}
+            <StepRenderer
+              step={step}
+              index={idx}
+              total={steps.length}
+              basePath={basePath}
+              scope={scope}
+              {...rest}
+            />
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1094,23 +1183,11 @@ function StepRenderer({
   const meta = STEP_META[step.step_type]
   const Icon = meta.icon
   const expanded = props.expandedId === step.cid
-  const isCondition = step.step_type === "condition"
+  const isBranching = isBranchingType(step.step_type)
   const nested = basePath.length > 0
-  // Card widths on mobile fill the full canvas column (max-w-2xl px-4
-  // still keeps them reasonable). On sm+ fixed widths come back so the
-  // flow visual stays recognisable — but only at the top level: a
-  // branch column is a fraction of its condition's width, so a 320px
-  // card inside one overflowed its own column and dragged the editor's
-  // controls out of reach (issue #474). Nested cards fill the column
-  // they were given instead.
-  //
-  // A condition is wider than a plain step because it has to hold two
-  // branch columns side by side; 600px (the canvas is max-w-2xl, i.e.
-  // 640px of content) leaves each branch ~294px — near enough to the
-  // 320px a step gets at the top level for the same editors to fit.
   const width = nested
     ? "w-full"
-    : isCondition
+    : isBranching
       ? "w-full max-w-[600px] sm:w-[600px]"
       : "w-full max-w-[320px] sm:w-80"
 
@@ -1134,14 +1211,20 @@ function StepRenderer({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                {isCondition ? "Condition" : step.step_type === "wait" ? "Wait" : "Action"}
+                {step.step_type === "ai_classification"
+                  ? "AI"
+                  : step.step_type === "condition"
+                    ? "Condition"
+                    : step.step_type === "wait"
+                      ? "Wait"
+                      : "Action"}
               </div>
-              <div className="truncate text-sm font-medium text-foreground">{t(`steps.${meta.label}`)}</div>
+              <div className="truncate text-sm font-medium text-foreground">
+                {stepDisplayLabel(step.step_type, t)}
+              </div>
               <div className="truncate text-[11px] text-muted-foreground">{previewFor(step)}</div>
             </div>
-            <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded && "rotate-180")}
-            />
+            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded && "rotate-180")} />
           </button>
           {expanded && (
             <div className="border-t border-border px-4 py-3">
@@ -1170,11 +1253,7 @@ function StepRenderer({
                     <ArrowDown className="h-4 w-4" />
                   </Button>
                 </div>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => props.deleteStepAt(path)}
-                >
+                <Button variant="destructive" size="sm" onClick={() => props.deleteStepAt(path)}>
                   <Trash2 className="h-3.5 w-3.5" />
                   {t("delete")}
                 </Button>
@@ -1183,15 +1262,10 @@ function StepRenderer({
           )}
         </div>
 
-        {isCondition && (
-          <ConditionBranches step={step} path={path} {...props} />
-        )}
+        {isBranching && <ConditionBranches step={step} path={path} {...props} />}
       </div>
 
-      {/* A condition branches into Yes/No (rendered above by
-          ConditionBranches), so it has no linear "continue" path — adding
-          the trailing connector here would produce a spurious third output. */}
-      {!isCondition && (
+      {!isBranching && (
         <AddButton onPick={(t) => props.addStepAt(scope, index + 1, t)} />
       )}
     </>
@@ -1204,17 +1278,12 @@ function ConditionBranches({
   ...props
 }: {
   step: BuilderStep
-  /** The condition's OWN path. Children hang off it, one marker each. */
   path: StepPath
 } & Omit<StepListProps, "steps" | "basePath" | "scope">) {
   const t = useTranslations("Automations.builder")
   const yes = step.branches?.yes ?? []
   const no = step.branches?.no ?? []
   return (
-    // Stack Yes/No vertically until THIS CARD is wide enough for two
-    // columns. A viewport breakpoint can't tell: a condition nested in
-    // a branch is a fraction of the screen, and `sm:grid-cols-2` split
-    // it anyway, leaving two columns too narrow to render a step in.
     <div className="@container mt-3 w-full">
       <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2">
         <BranchColumn label={t("branches.yes")} color="text-primary">
@@ -1276,7 +1345,7 @@ function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
             return (
               <DropdownMenuItem key={tp} onClick={() => onPick(tp)}>
                 <Icon className="h-4 w-4" />
-                {t(`steps.${STEP_META[tp].label}`)}
+                {stepDisplayLabel(tp, t)}
               </DropdownMenuItem>
             )
           })}
@@ -1286,10 +1355,6 @@ function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
     </div>
   )
 }
-
-// ------------------------------------------------------------
-// Per-step config editor
-// ------------------------------------------------------------
 
 function StepEditor({
   step,
@@ -1317,14 +1382,10 @@ function StepEditor({
       )
     case "send_buttons":
     case "send_list":
-      // The whole step_config IS the interactive payload; the shared
-      // builder edits it in place (and enforces Meta's limits + preview).
       return (
         <InteractiveBuilder
           value={asInteractive(cfg)}
-          onChange={(payload) =>
-            onChange({ ...step, step_config: toStepConfig(payload) })
-          }
+          onChange={(payload) => onChange({ ...step, step_config: toStepConfig(payload) })}
         />
       )
     case "send_template":
@@ -1334,6 +1395,13 @@ function StepEditor({
           language={(cfg.language as string) ?? ""}
           onChange={(patch) => set(patch)}
           t={t}
+        />
+      )
+    case "send_media":
+      return (
+        <AutomationMediaFields
+          config={cfg}
+          onChange={(patch) => set(patch)}
         />
       )
     case "add_tag":
@@ -1455,25 +1523,36 @@ function StepEditor({
               <option value="contact_field">{t("config.subjects.contact_field")}</option>
               <option value="message_content">{t("config.subjects.message_content")}</option>
               <option value="time_of_day">{t("config.subjects.time_of_day")}</option>
+              <option value="variable">{t("config.subjects.variable")}</option>
             </select>
           </FieldBlock>
           <FieldBlock label={t("config.operandLabel")}>
-            <Input
-              placeholder={
-                cfg.subject === "time_of_day"
-                  ? t("config.placeholderTime")
-                  : cfg.subject === "contact_field"
-                  ? t("config.placeholderContact")
-                  : cfg.subject === "tag_presence"
-                  ? t("config.placeholderTag")
-                  : ""
-              }
-              value={(cfg.operand as string) ?? ""}
-              onChange={(e) => set({ operand: e.target.value })}
-              className="bg-muted text-foreground"
-            />
+            {cfg.subject === "tag_presence" ? (
+              <TagSelect
+                value={(cfg.operand as string) ?? ""}
+                onChange={(v) => set({ operand: v })}
+                t={t}
+              />
+            ) : (
+              <Input
+                placeholder={
+                  cfg.subject === "time_of_day"
+                    ? t("config.placeholderTime")
+                    : cfg.subject === "contact_field"
+                      ? t("config.placeholderContact")
+                      : cfg.subject === "variable"
+                        ? t("config.placeholderVariable")
+                        : ""
+                }
+                value={(cfg.operand as string) ?? ""}
+                onChange={(e) => set({ operand: e.target.value })}
+                className="bg-muted text-foreground"
+              />
+            )}
           </FieldBlock>
-          {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
+          {(cfg.subject === "contact_field" ||
+            cfg.subject === "message_content" ||
+            cfg.subject === "variable") && (
             <FieldBlock label="Value">
               <Input
                 value={(cfg.value as string) ?? ""}
@@ -1482,6 +1561,83 @@ function StepEditor({
               />
             </FieldBlock>
           )}
+        </>
+      )
+    case "ai_classification":
+      return <AiClassificationFields config={cfg} onChange={set} />
+    case "emit_business_event":
+      return (
+        <>
+          <FieldBlock label="Event type">
+            <Input
+              value={(cfg.event_type as string) ?? ""}
+              onChange={(e) => set({ event_type: e.target.value })}
+              placeholder="human_handoff_requested"
+              className="bg-muted font-mono text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Source">
+            <Input
+              value={(cfg.source as string) ?? "automation"}
+              onChange={(e) => set({ source: e.target.value })}
+              className="bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Payload JSON">
+            <Textarea
+              value={(cfg.payload_template as string) ?? "{}"}
+              onChange={(e) => set({ payload_template: e.target.value })}
+              placeholder={'{"reason":"{{vars.ai_reason}}","summary":"{{vars.ai_summary}}"}'}
+              className="min-h-24 bg-muted font-mono text-xs text-foreground"
+            />
+          </FieldBlock>
+        </>
+      )
+    case "start_flow":
+      return (
+        <FieldBlock label="Flow">
+          <FlowSelect
+            value={(cfg.flow_id as string) ?? ""}
+            onChange={(flowId) => set({ flow_id: flowId })}
+          />
+        </FieldBlock>
+      )
+    case "send_telegram":
+      return (
+        <>
+          <FieldBlock label="Telegram bot">
+            <TelegramConnectionSelect
+              value={(cfg.connection_id as string) ?? ""}
+              onChange={(connectionId) => set({ connection_id: connectionId })}
+            />
+          </FieldBlock>
+          <FieldBlock label="Chat ID override">
+            <Input
+              value={(cfg.chat_id as string) ?? ""}
+              onChange={(e) => set({ chat_id: e.target.value })}
+              placeholder="Leave blank to use the connection default"
+              className="bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Message">
+            <Textarea
+              value={(cfg.message as string) ?? ""}
+              onChange={(e) => set({ message: e.target.value })}
+              placeholder={"🚨 Human handoff\n{{vars.ai_summary}}"}
+              className="min-h-24 bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label="Parse mode">
+            <select
+              value={(cfg.parse_mode as string) ?? "HTML"}
+              onChange={(e) => set({ parse_mode: e.target.value })}
+              className={SELECT_CLASS}
+            >
+              <option value="HTML">HTML</option>
+              <option value="Markdown">Markdown</option>
+              <option value="MarkdownV2">MarkdownV2</option>
+            </select>
+          </FieldBlock>
         </>
       )
     case "send_webhook":
@@ -1542,16 +1698,14 @@ function previewFor(step: BuilderStep): string {
       return `${step.step_config.amount ?? "?"} ${step.step_config.unit ?? ""}`
     case "condition":
       return `when ${step.step_config.subject ?? "?"}`
+    case "ai_classification":
+      return `Positive ≥ ${step.step_config.min_score ?? 60}`
     case "send_webhook":
       return (step.step_config.url as string) || "no url"
     default:
       return ""
   }
 }
-
-// ------------------------------------------------------------
-// Serialize builder tree → API payload (flattened shape)
-// ------------------------------------------------------------
 
 interface ApiStep {
   step_type: string
@@ -1569,10 +1723,6 @@ export function toApiSteps(steps: BuilderStep[]): ApiStep[] {
   }))
 }
 
-/**
- * Convert server-returned step tree (from loadStepsTree) into the
- * builder-local shape with client ids.
- */
 export interface ServerStepNode {
   id: string
   step_type: string
@@ -1585,12 +1735,11 @@ export function fromServerSteps(nodes: ServerStepNode[]): BuilderStep[] {
     cid: cid(),
     step_type: n.step_type as AutomationStepType,
     step_config: n.step_config ?? {},
-    branches:
-      n.step_type === "condition"
-        ? {
-            yes: fromServerSteps(n.branches?.yes ?? []),
-            no: fromServerSteps(n.branches?.no ?? []),
-          }
-        : undefined,
+    branches: isBranchingType(n.step_type)
+      ? {
+          yes: fromServerSteps(n.branches?.yes ?? []),
+          no: fromServerSteps(n.branches?.no ?? []),
+        }
+      : undefined,
   }))
 }

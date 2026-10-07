@@ -1,0 +1,16 @@
+[
+  {
+    "id": "69f44290-02d3-4384-ad59-72fc863f6970",
+    "account_id": "6762c55f-cbc9-4185-ad56-fca989006295",
+    "created_by": "f1adc019-4a60-4cf1-b168-203f75d832ac",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "system_prompt": "",
+    "is_active": "t",
+    "auto_reply_enabled": "f",
+    "auto_reply_max_per_conversation": "3",
+    "handoff_agent_id": "",
+    "created_at": "2026-10-05 07:46:05.625262+00",
+    "updated_at": "2026-10-05 10:26:57.329112+00"
+  }
+]

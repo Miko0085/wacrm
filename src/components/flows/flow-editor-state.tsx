@@ -172,6 +172,13 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
         var_key: "answer",
         next_node_key: "",
       };
+    case "ai_decision":
+      return {
+        instruction: "Understand the customer reply, identify intents, extract qualification data, and decide whether a human is required.",
+        input_var: "last_customer_message",
+        context_messages: 5,
+        next_node_key: "",
+      };
     case "condition":
       return {
         subject: "var",

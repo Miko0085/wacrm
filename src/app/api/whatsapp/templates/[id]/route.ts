@@ -11,6 +11,7 @@ import {
 } from '@/lib/whatsapp/template-validators'
 import { buildMetaTemplatePayload } from '@/lib/whatsapp/template-components'
 import { ensureImageHeaderHandle } from '@/lib/whatsapp/template-header-handle'
+import { requireActiveAccount } from '@/lib/auth/account'
 
 /**
  * Per-template lifecycle endpoint.
@@ -67,18 +68,7 @@ export async function PATCH(
 
     // Resolve the caller's account_id so template + whatsapp_config
     // lookups work for teammates who didn't author the row.
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('account_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    const accountId = profile?.account_id as string | undefined
-    if (!accountId) {
-      return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
-        { status: 403 },
-      )
-    }
+    const accountId = (await requireActiveAccount()).accountId
 
     let payload: TemplatePayload
     try {
@@ -264,18 +254,7 @@ export async function DELETE(
     // Same account-scoping rationale as the PATCH handler above —
     // teammates need to be able to operate on shared templates +
     // the shared whatsapp_config.
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('account_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    const accountId = profile?.account_id as string | undefined
-    if (!accountId) {
-      return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
-        { status: 403 },
-      )
-    }
+    const accountId = (await requireActiveAccount()).accountId
 
     const { data: existing, error: lookupErr } = await supabase
       .from('message_templates')

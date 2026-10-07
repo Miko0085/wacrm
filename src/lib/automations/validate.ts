@@ -44,7 +44,7 @@ function walk(steps: StepLike[], prefix: string, issues: ValidationIssue[]): voi
   steps.forEach((s, i) => {
     const path = `${prefix}steps[${i}]`
     validateOne(s, path, issues)
-    if (s.step_type === 'condition' && s.branches) {
+    if ((s.step_type === 'condition' || s.step_type === 'ai_classification') && s.branches) {
       if (s.branches.yes) walk(s.branches.yes, `${path}.yes.`, issues)
       if (s.branches.no) walk(s.branches.no, `${path}.no.`, issues)
     }
@@ -61,8 +61,6 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       break
     case 'send_buttons':
     case 'send_list': {
-      // The whole step_config IS the interactive payload; validate it
-      // against Meta's limits (same check the engine runs before send).
       const result = validateInteractivePayload(c)
       if (!result.ok) {
         issues.push({ path: `${path}.interactive`, message: result.error })
@@ -72,6 +70,35 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
     case 'send_template':
       if (!nonEmpty(c.template_name)) {
         issues.push({ path: `${path}.template_name`, message: 'template name is required' })
+      }
+      break
+    case 'send_media':
+      if (!['image', 'video', 'document'].includes(String(c.media_type))) {
+        issues.push({
+          path: `${path}.media_type`,
+          message: 'media type must be image, video, or document',
+        })
+      }
+      if (!nonEmpty(c.media_url)) {
+        issues.push({ path: `${path}.media_url`, message: 'media file is required' })
+      } else {
+        try {
+          const mediaUrl = new URL(String(c.media_url))
+          if (mediaUrl.protocol !== 'http:' && mediaUrl.protocol !== 'https:') {
+            issues.push({
+              path: `${path}.media_url`,
+              message: 'media URL must use http or https',
+            })
+          }
+        } catch {
+          issues.push({ path: `${path}.media_url`, message: 'media URL is not valid' })
+        }
+      }
+      if (typeof c.caption === 'string' && c.caption.length > 1024) {
+        issues.push({
+          path: `${path}.caption`,
+          message: 'media caption must be 1024 characters or fewer',
+        })
       }
       break
     case 'add_tag':
@@ -126,6 +153,68 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
         issues.push({ path: `${path}.operand`, message: 'condition operand is required' })
       }
       break
+    case 'ai_classification':
+      if (!nonEmpty(c.instruction)) {
+        issues.push({ path: `${path}.instruction`, message: 'AI instruction is required' })
+      }
+      if (!nonEmpty(c.input_template)) {
+        issues.push({ path: `${path}.input_template`, message: 'AI input is required' })
+      }
+      if (
+        !Number.isInteger(c.context_messages) ||
+        Number(c.context_messages) < 1 ||
+        Number(c.context_messages) > 20
+      ) {
+        issues.push({
+          path: `${path}.context_messages`,
+          message: 'conversation context must be an integer from 1 to 20',
+        })
+      }
+      if (
+        typeof c.min_score !== 'number' ||
+        !Number.isFinite(c.min_score) ||
+        c.min_score < 0 ||
+        c.min_score > 100
+      ) {
+        issues.push({
+          path: `${path}.min_score`,
+          message: 'minimum score must be between 0 and 100',
+        })
+      }
+      if (c.positive_intent !== 'positive') {
+        issues.push({
+          path: `${path}.positive_intent`,
+          message: 'positive intent must be "positive"',
+        })
+      }
+      break
+    case 'emit_business_event':
+      if (!nonEmpty(c.event_type)) {
+        issues.push({ path: `${path}.event_type`, message: 'business event type is required' })
+      }
+      if (c.payload_template !== undefined && typeof c.payload_template !== 'string') {
+        issues.push({ path: `${path}.payload_template`, message: 'business event payload must be JSON text' })
+      }
+      break
+    case 'start_flow':
+      if (!nonEmpty(c.flow_id)) {
+        issues.push({ path: `${path}.flow_id`, message: 'flow is required' })
+      }
+      break
+    case 'send_telegram':
+      if (!nonEmpty(c.connection_id)) {
+        issues.push({ path: `${path}.connection_id`, message: 'Telegram connection is required' })
+      }
+      if (!nonEmpty(c.message)) {
+        issues.push({ path: `${path}.message`, message: 'Telegram message is required' })
+      }
+      if (
+        c.parse_mode !== undefined &&
+        !['HTML', 'Markdown', 'MarkdownV2'].includes(String(c.parse_mode))
+      ) {
+        issues.push({ path: `${path}.parse_mode`, message: 'Telegram parse mode is invalid' })
+      }
+      break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
         issues.push({ path: `${path}.url`, message: 'webhook URL is required' })
@@ -144,7 +233,6 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       }
       break
     case 'close_conversation':
-      // No config required.
       break
     default:
       issues.push({ path, message: `unknown step type: ${step.step_type}` })
@@ -165,12 +253,6 @@ export function validateTriggerForActivation(
     } else if (k.some((v) => typeof v !== 'string' || v.trim() === '')) {
       issues.push({ path: 'trigger.keywords', message: 'keywords cannot be empty strings' })
     }
-    // A missing match_type defaults to "contains" at runtime (see
-    // automations/engine.ts and flows/engine.ts, which both read
-    // `match_type ?? "contains"`), so only an explicit, unrecognised
-    // value is invalid here. This keeps activation validation in step
-    // with the engine and with the builder's "Contains" default — an
-    // automation that shows the default in the UI must not be rejected.
     if (
       cfg.match_type != null &&
       cfg.match_type !== 'exact' &&
@@ -189,6 +271,21 @@ export function validateTriggerForActivation(
   } else if (triggerType === 'tag_added') {
     if (!nonEmpty(cfg.tag_id)) {
       issues.push({ path: 'trigger.tag_id', message: 'tag is required' })
+    }
+  } else if (triggerType === 'business_event') {
+    const eventTypes = cfg.event_types
+    if (!Array.isArray(eventTypes) || eventTypes.length === 0) {
+      issues.push({
+        path: 'trigger.event_types',
+        message: 'at least one business event type is required',
+      })
+    } else if (
+      eventTypes.some((v) => typeof v !== 'string' || v.trim() === '')
+    ) {
+      issues.push({
+        path: 'trigger.event_types',
+        message: 'business event types cannot be empty strings',
+      })
     }
   } else if (triggerType === 'interactive_reply') {
     const ids = cfg.reply_ids

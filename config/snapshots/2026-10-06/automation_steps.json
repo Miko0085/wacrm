@@ -1,0 +1,32 @@
+[
+  {
+    "id": "2f8947fe-fe38-49b2-bdc9-d40a89d62c9d",
+    "automation_id": "fc29ee0a-cfd5-4a87-a0a3-0192f24445a1",
+    "parent_step_id": "",
+    "branch": "",
+    "step_type": "ai_classification",
+    "step_config": {
+      "min_score": 60,
+      "instruction": "Determine whether the customer is genuinely interested\nand should be transferred to sales.",
+      "input_template": "{{message.text}}",
+      "positive_intent": "positive",
+      "context_messages": 5
+    },
+    "position": "0",
+    "created_at": "2026-10-05 10:27:24.429879+00"
+  },
+  {
+    "id": "f4e62373-d44d-463d-89f3-3cd69367d8d2",
+    "automation_id": "fc29ee0a-cfd5-4a87-a0a3-0192f24445a1",
+    "parent_step_id": "2f8947fe-fe38-49b2-bdc9-d40a89d62c9d",
+    "branch": "yes",
+    "step_type": "send_webhook",
+    "step_config": {
+      "url": "https://api.nikaestate.ae/webhooks/wacrm/routes/greece",
+      "headers": {},
+      "body_template": "{\n  \"route_secret\": \"***REDACTED***\",\n  \"contact_id\": \"{{contact.id}}\",\n  \"conversation_id\": \"{{conversation.id}}\"\n}"
+    },
+    "position": "0",
+    "created_at": "2026-10-05 10:27:24.429879+00"
+  }
+]

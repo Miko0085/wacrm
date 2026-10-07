@@ -102,13 +102,14 @@ export default function NotificationsPage() {
         .from("notifications")
         .update({ read_at: new Date().toISOString() })
         .eq("id", id)
+        .eq("account_id", accountId)
         .is("read_at", null);
       if (updateErr) {
         toast.error("Failed to mark notification as read");
         load();
       }
     },
-    [load],
+    [load, accountId],
   );
 
   const handleClick = useCallback(
@@ -134,13 +135,14 @@ export default function NotificationsPage() {
     const { error: updateErr } = await supabase
       .from("notifications")
       .update({ read_at: now })
+      .eq("account_id", accountId)
       .is("read_at", null);
     setMarkingAll(false);
     if (updateErr) {
       toast.error("Failed to mark all as read");
       load();
     }
-  }, [unreadIds.length, load]);
+  }, [unreadIds.length, load, accountId]);
 
   if (error) {
     return (

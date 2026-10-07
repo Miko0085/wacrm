@@ -18,6 +18,7 @@
 // ============================================================
 
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import type { PostgrestError } from "@supabase/supabase-js";
 
 import { hashInviteToken } from "@/lib/auth/invitations";
@@ -27,6 +28,7 @@ import {
   RATE_LIMITS,
 } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
+import { ACTIVE_ACCOUNT_COOKIE } from "@/lib/auth/account";
 
 function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
@@ -86,6 +88,16 @@ export async function POST(
   });
 
   if (error) return rpcErrorToResponse(error);
+
+  if (typeof accountId === "string") {
+    (await cookies()).set(ACTIVE_ACCOUNT_COOKIE, accountId, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+    });
+  }
 
   return NextResponse.json({ ok: true, accountId });
 }

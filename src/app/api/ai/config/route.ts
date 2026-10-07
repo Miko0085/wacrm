@@ -105,7 +105,7 @@ export async function POST(request: Request) {
     let handoffAgentId: string | null = null
     if (rawHandoff) {
       const { data: member } = await supabase
-        .from('profiles')
+        .from('account_memberships')
         .select('user_id')
         .eq('account_id', accountId)
         .eq('user_id', rawHandoff)

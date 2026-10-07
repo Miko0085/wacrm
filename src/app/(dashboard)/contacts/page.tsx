@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
@@ -49,36 +50,44 @@ import {
   SlidersHorizontal,
   Filter,
   X,
+  Tags,
+  Send,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { ImportModal } from '@/components/contacts/import-modal';
 import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager';
+import { BulkContactAdvancedActions } from '@/components/contacts/bulk-contact-advanced-actions';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
 
 const PAGE_SIZE = 25;
+const CONTACT_BROADCAST_SELECTION_KEY = 'wacrm:broadcast-contact-selection';
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
+  last_broadcast_at?: string | null;
 }
+
+type BulkTagMode = 'add' | 'remove';
 
 export default function ContactsPage() {
   const t = useTranslations('Contacts.page');
+  const router = useRouter();
   const supabase = createClient();
   const canEdit = useCan('send-messages');
   const canEditSettings = useCan('edit-settings');
+  const { accountId } = useAuth();
 
   const [contacts, setContacts] = useState<ContactWithTags[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  // Tag filter — contacts shown must have ANY of these tags (OR).
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
 
-  // Modals
   const [formOpen, setFormOpen] = useState(false);
   const [editContact, setEditContact] = useState<Contact | null>(null);
   const [editContactTags, setEditContactTags] = useState<ContactTag[]>([]);
@@ -90,41 +99,43 @@ export default function ContactsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Bulk selection (page-scoped — only the loaded rows are selectable)
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectAllMatching, setSelectAllMatching] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const [bulkTagMode, setBulkTagMode] = useState<BulkTagMode>('add');
+  const [bulkTagIds, setBulkTagIds] = useState<string[]>([]);
+  const [bulkWorking, setBulkWorking] = useState(false);
 
-  // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
-
-  // Guards against out-of-order fetch responses: each fetchContacts run
-  // claims a sequence number and only the latest is allowed to commit its
-  // results. Without this, rapidly toggling tag filters could let a slower
-  // earlier request resolve last and render stale rows.
   const fetchSeq = useRef(0);
 
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setSelectAllMatching(false);
+  }, []);
+
   const fetchTags = useCallback(async () => {
-    const { data } = await supabase.from('tags').select('*');
+    if (!accountId) return;
+    const { data } = await supabase
+      .from('tags')
+      .select('*')
+      .eq('account_id', accountId);
     if (data) {
       const map: Record<string, Tag> = {};
-      data.forEach((t) => (map[t.id] = t));
+      data.forEach((tag) => (map[tag.id] = tag));
       setTagsMap(map);
-      // Drop any filter selections whose tag no longer exists (e.g. a tag
-      // deleted elsewhere) so it can't linger invisibly in the query.
       setSelectedTagIds((prev) => {
         const pruned = prev.filter((id) => map[id]);
         return pruned.length === prev.length ? prev : pruned;
       });
     }
-  }, [supabase]);
+  }, [supabase, accountId]);
 
   const fetchContacts = useCallback(async () => {
+    if (!accountId) return;
     const seq = ++fetchSeq.current;
     setLoading(true);
-    // The visible rows are about to change — drop any selection that
-    // referred to the old page/search results so the bulk bar can't
-    // act on rows the user can no longer see.
-    setSelected(new Set());
 
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
@@ -134,29 +145,27 @@ export default function ContactsPage() {
     let count: number;
 
     if (selectedTagIds.length > 0) {
-      // Tag filter active — resolve it server-side (join + distinct +
-      // windowed total count + pagination) so a tag covering many
-      // contacts can't silently truncate the result or overflow an IN
-      // clause. See migration 025_filter_contacts_by_tags.
-      const { data, error } = await supabase.rpc('filter_contacts_by_tags', {
+      const { data, error } = await supabase.rpc('filter_contacts_by_tags_for_account', {
+        p_account_id: accountId,
         p_tag_ids: selectedTagIds,
         p_search: term || null,
         p_limit: PAGE_SIZE,
         p_offset: from,
       });
-      if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+      if (seq !== fetchSeq.current) return;
       if (error) {
         toast.error(t('toastFailedLoad'));
         setLoading(false);
         return;
       }
       const rows = (data ?? []) as { contact: Contact; total_count: number }[];
-      contactRows = rows.map((r) => r.contact);
+      contactRows = rows.map((row) => row.contact);
       count = rows.length > 0 ? Number(rows[0].total_count) : 0;
     } else {
       let query = supabase
         .from('contacts')
         .select('*', { count: 'exact' })
+        .eq('account_id', accountId)
         .order('created_at', { ascending: false })
         .range(from, to);
 
@@ -166,7 +175,7 @@ export default function ContactsPage() {
       }
 
       const { data, count: exactCount, error } = await query;
-      if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+      if (seq !== fetchSeq.current) return;
       if (error) {
         toast.error(t('toastFailedLoad'));
         setLoading(false);
@@ -184,13 +193,20 @@ export default function ContactsPage() {
       return;
     }
 
-    // Fetch tags for these contacts
-    const contactIds = contactRows.map((c) => c.id);
-    const { data: contactTags } = await supabase
-      .from('contact_tags')
-      .select('contact_id, tag_id')
-      .in('contact_id', contactIds);
-    if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+    const contactIds = contactRows.map((contact) => contact.id);
+    const [{ data: contactTags }, { data: broadcastRows }] = await Promise.all([
+      supabase
+        .from('contact_tags')
+        .select('contact_id, tag_id')
+        .in('contact_id', contactIds),
+      supabase
+        .from('broadcast_recipients')
+        .select('contact_id, sent_at')
+        .in('contact_id', contactIds)
+        .not('sent_at', 'is', null)
+        .order('sent_at', { ascending: false }),
+    ]);
+    if (seq !== fetchSeq.current) return;
 
     const tagsByContact: Record<string, string[]> = {};
     contactTags?.forEach((ct) => {
@@ -198,28 +214,30 @@ export default function ContactsPage() {
       tagsByContact[ct.contact_id].push(ct.tag_id);
     });
 
-    const enriched: ContactWithTags[] = contactRows.map((c) => ({
-      ...c,
-      tags: (tagsByContact[c.id] ?? [])
-        .map((tid) => tagsMap[tid])
-        .filter(Boolean),
-    }));
+    const lastBroadcastByContact: Record<string, string> = {};
+    broadcastRows?.forEach((row) => {
+      if (row.sent_at && !lastBroadcastByContact[row.contact_id]) {
+        lastBroadcastByContact[row.contact_id] = row.sent_at;
+      }
+    });
 
-    setContacts(enriched);
+    setContacts(
+      contactRows.map((contact) => ({
+        ...contact,
+        tags: (tagsByContact[contact.id] ?? [])
+          .map((tagId) => tagsMap[tagId])
+          .filter(Boolean),
+        last_broadcast_at: lastBroadcastByContact[contact.id] ?? null,
+      })),
+    );
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagsMap, t]);
+  }, [supabase, page, search, selectedTagIds, tagsMap, t, accountId]);
 
-  // Load-once-on-mount-ish data fetches. Each setter inside runs
-  // inside an async promise completion (Supabase await), not
-  // synchronously in the effect body, so the cascade the lint rule
-  // warns about doesn't apply here.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTags();
   }, [fetchTags]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchContacts();
   }, [fetchContacts]);
 
@@ -252,41 +270,48 @@ export default function ContactsPage() {
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
-
     const { error } = await supabase
       .from('contacts')
       .delete()
-      .eq('id', deleteTarget.id);
+      .eq('id', deleteTarget.id)
+      .eq('account_id', accountId!);
 
-    if (error) {
-      toast.error(t('toastFailedDelete'));
-    } else {
+    if (error) toast.error(t('toastFailedDelete'));
+    else {
       toast.success(t('toastDeleted'));
+      clearSelection();
       fetchContacts();
     }
-
     setDeleting(false);
     setDeleteConfirmOpen(false);
     setDeleteTarget(null);
   }
 
   const allOnPageSelected =
-    contacts.length > 0 && contacts.every((c) => selected.has(c.id));
-  const someOnPageSelected = contacts.some((c) => selected.has(c.id));
+    selectAllMatching ||
+    (contacts.length > 0 && contacts.every((contact) => selected.has(contact.id)));
+  const someOnPageSelected =
+    selectAllMatching || contacts.some((contact) => selected.has(contact.id));
+  const bulkSelectedCount = selectAllMatching ? totalCount : selected.size;
 
   function toggleSelectAll() {
+    if (selectAllMatching) {
+      clearSelection();
+      return;
+    }
     setSelected((prev) => {
       const next = new Set(prev);
-      if (allOnPageSelected) {
-        contacts.forEach((c) => next.delete(c.id));
+      if (contacts.length > 0 && contacts.every((contact) => next.has(contact.id))) {
+        contacts.forEach((contact) => next.delete(contact.id));
       } else {
-        contacts.forEach((c) => next.add(c.id));
+        contacts.forEach((contact) => next.add(contact.id));
       }
       return next;
     });
   }
 
   function toggleSelect(id: string) {
+    if (selectAllMatching) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -295,57 +320,161 @@ export default function ContactsPage() {
     });
   }
 
+  function currentBulkRpcParams() {
+    return {
+      p_account_id: accountId!,
+      p_contact_ids: selectAllMatching ? null : [...selected],
+      p_all_matching: selectAllMatching,
+      p_filter_tag_ids: selectedTagIds.length > 0 ? selectedTagIds : null,
+      p_search: search.trim() || null,
+    };
+  }
+
   async function handleBulkDelete() {
-    const ids = [...selected];
-    if (ids.length === 0) return;
+    if (!accountId || bulkSelectedCount === 0) return;
     setDeleting(true);
 
-    const { error } = await supabase.from('contacts').delete().in('id', ids);
+    const { data, error } = await supabase.rpc('delete_contacts_bulk', {
+      p_account_id: accountId,
+      p_contact_ids: selectAllMatching ? null : [...selected],
+      p_all_matching: selectAllMatching,
+      p_tag_ids: selectedTagIds.length > 0 ? selectedTagIds : null,
+      p_search: search.trim() || null,
+    });
 
     if (error) {
       toast.error(t('toastBulkFailedDelete'));
     } else {
-      toast.success(t('toastBulkDeleted', { count: ids.length }));
-      setSelected(new Set());
-      fetchContacts();
+      const deletedCount = Number(data ?? bulkSelectedCount);
+      toast.success(t('toastBulkDeleted', { count: deletedCount }));
+      clearSelection();
+      setPage(0);
+      await fetchContacts();
     }
 
     setDeleting(false);
     setBulkDeleteOpen(false);
   }
 
+  function openBulkTagDialog(mode: BulkTagMode) {
+    setBulkTagMode(mode);
+    setBulkTagIds([]);
+    setBulkTagOpen(true);
+  }
+
+  function toggleBulkTag(tagId: string) {
+    setBulkTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
+    );
+  }
+
+  async function handleBulkTags() {
+    if (!accountId || bulkSelectedCount === 0 || bulkTagIds.length === 0) return;
+    setBulkWorking(true);
+
+    const { error } = await supabase.rpc('bulk_update_contact_tags', {
+      p_account_id: accountId,
+      p_action: bulkTagMode,
+      p_tag_ids: bulkTagIds,
+      p_contact_ids: selectAllMatching ? null : [...selected],
+      p_all_matching: selectAllMatching,
+      p_filter_tag_ids: selectedTagIds.length > 0 ? selectedTagIds : null,
+      p_search: search.trim() || null,
+    });
+
+    if (error) {
+      toast.error(`Failed to ${bulkTagMode} tags: ${error.message}`);
+    } else {
+      toast.success(
+        `${bulkTagMode === 'add' ? 'Added tags to' : 'Removed tags from'} ${bulkSelectedCount.toLocaleString()} selected contacts.`,
+      );
+      setBulkTagOpen(false);
+      setBulkTagIds([]);
+      await fetchContacts();
+    }
+    setBulkWorking(false);
+  }
+
+  async function handleCreateBroadcast() {
+    if (!accountId || bulkSelectedCount === 0) return;
+    setBulkWorking(true);
+
+    try {
+      const { data, error } = await supabase.rpc('resolve_bulk_contact_ids', currentBulkRpcParams());
+      if (error) throw error;
+
+      const ids = (data ?? []) as string[];
+      if (ids.length === 0) {
+        toast.error('No contacts found in the current selection.');
+        return;
+      }
+
+      const rows: { phone: string; name?: string }[] = [];
+      const chunkSize = 500;
+      for (let index = 0; index < ids.length; index += chunkSize) {
+        const chunk = ids.slice(index, index + chunkSize);
+        const { data: contactRows, error: contactError } = await supabase
+          .from('contacts')
+          .select('id,phone,name')
+          .eq('account_id', accountId)
+          .in('id', chunk);
+        if (contactError) throw contactError;
+        for (const contact of contactRows ?? []) {
+          if (contact.phone) {
+            rows.push({ phone: contact.phone, name: contact.name || undefined });
+          }
+        }
+      }
+
+      if (rows.length === 0) {
+        toast.error('The selected contacts do not have usable phone numbers.');
+        return;
+      }
+
+      window.sessionStorage.setItem(CONTACT_BROADCAST_SELECTION_KEY, JSON.stringify(rows));
+      router.push('/broadcasts/new?source=contacts');
+    } catch (error) {
+      console.error('Failed to prepare selected contacts for broadcast:', error);
+      toast.error(
+        `Failed to prepare broadcast audience: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    } finally {
+      setBulkWorking(false);
+    }
+  }
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
-
-  // Tag filter helpers. Every change resets to page 0 — the result set
-  // shrinks/grows so page N may no longer be valid (mirrors the search box).
-  const allTags = Object.values(tagsMap).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  );
+  const allTags = Object.values(tagsMap).sort((a, b) => a.name.localeCompare(b.name));
   const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0;
+
+  function handleSearchChange(value: string) {
+    setSearch(value);
+    setPage(0);
+    clearSelection();
+  }
 
   function toggleTagFilter(tagId: string) {
     setSelectedTagIds((prev) =>
-      prev.includes(tagId)
-        ? prev.filter((id) => id !== tagId)
-        : [...prev, tagId]
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
     );
     setPage(0);
+    clearSelection();
   }
 
   function clearTagFilters() {
     setSelectedTagIds([]);
     setPage(0);
+    clearSelection();
   }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="mt-1 text-sm text-muted-foreground">
             {totalCount > 0 ? t('subtitle', { count: totalCount }) : t('subtitleZero')}
           </p>
         </div>
@@ -374,7 +503,7 @@ export default function ContactsPage() {
             canAct={canEdit}
             gateReason="add or import contacts"
             onClick={openAddForm}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground"
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="size-4" />
             {t('addContactBtn')}
@@ -382,21 +511,15 @@ export default function ContactsPage() {
         </div>
       </div>
 
-      {/* Search + tag filter */}
       <div className="space-y-2">
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <div className="relative w-full max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                // Reset pagination when the query changes — the result
-                // set shrinks/grows, page N may no longer be valid.
-                setPage(0);
-              }}
+              onChange={(event) => handleSearchChange(event.target.value)}
               placeholder={t('searchPlaceholder')}
-              className="pl-8 bg-card border-border text-foreground placeholder:text-muted-foreground"
+              className="border-border bg-card pl-8 text-foreground placeholder:text-muted-foreground"
             />
           </div>
 
@@ -405,7 +528,7 @@ export default function ContactsPage() {
               render={
                 <Button
                   variant="outline"
-                  className="border-border text-muted-foreground hover:bg-muted shrink-0"
+                  className="shrink-0 border-border text-muted-foreground hover:bg-muted"
                 />
               }
             >
@@ -418,42 +541,27 @@ export default function ContactsPage() {
               )}
             </PopoverTrigger>
             <PopoverContent align="start" className="w-64 p-0">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-                <span className="text-sm font-medium text-popover-foreground">
-                  {t('filterByTags')}
-                </span>
+              <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                <span className="text-sm font-medium text-popover-foreground">{t('filterByTags')}</span>
                 {selectedTagIds.length > 0 && (
-                  <button
-                    onClick={clearTagFilters}
-                    className="text-xs text-muted-foreground hover:text-foreground"
-                  >
+                  <button onClick={clearTagFilters} className="text-xs text-muted-foreground hover:text-foreground">
                     {t('clearAll')}
                   </button>
                 )}
               </div>
               {allTags.length === 0 ? (
-                <p className="px-3 py-4 text-sm text-muted-foreground text-center">
-                  {t('noTagsYet')}
-                </p>
+                <p className="px-3 py-4 text-center text-sm text-muted-foreground">{t('noTagsYet')}</p>
               ) : (
                 <div className="max-h-64 overflow-y-auto py-1">
                   {allTags.map((tag) => (
-                    <label
-                      key={tag.id}
-                      className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50"
-                    >
+                    <label key={tag.id} className="flex cursor-pointer items-center gap-2.5 px-3 py-1.5 hover:bg-muted/50">
                       <Checkbox
                         checked={selectedTagIds.includes(tag.id)}
                         onCheckedChange={() => toggleTagFilter(tag.id)}
                         aria-label={`Filter by ${tag.name}`}
                       />
-                      <span
-                        className="size-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: tag.color }}
-                      />
-                      <span className="text-sm text-popover-foreground truncate">
-                        {tag.name}
-                      </span>
+                      <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: tag.color }} />
+                      <span className="truncate text-sm text-popover-foreground">{tag.name}</span>
                     </label>
                   ))}
                 </div>
@@ -462,7 +570,6 @@ export default function ContactsPage() {
           </Popover>
         </div>
 
-        {/* Active tag-filter chips */}
         {selectedTagIds.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             {selectedTagIds.map((id) => {
@@ -472,63 +579,106 @@ export default function ContactsPage() {
                 <span
                   key={id}
                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
-                  style={{
-                    backgroundColor: tag.color + '20',
-                    color: tag.color,
-                  }}
+                  style={{ backgroundColor: tag.color + '20', color: tag.color }}
                 >
                   {tag.name}
-                  <button
-                    onClick={() => toggleTagFilter(id)}
-                    aria-label={`Remove ${tag.name} filter`}
-                    className="hover:opacity-70"
-                  >
+                  <button onClick={() => toggleTagFilter(id)} aria-label={`Remove ${tag.name} filter`} className="hover:opacity-70">
                     <X className="size-3" />
                   </button>
                 </span>
               );
             })}
-            <button
-              onClick={clearTagFilters}
-              className="text-xs text-muted-foreground hover:text-foreground px-1"
-            >
+            <button onClick={clearTagFilters} className="px-1 text-xs text-muted-foreground hover:text-foreground">
               {t('clearAll')}
             </button>
           </div>
         )}
       </div>
 
-      {/* Bulk action bar */}
-      {selected.size > 0 && (
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-muted/40 px-4 py-2">
-          <p className="text-sm text-foreground">
-            {t('selectedCount', { count: selected.size })}
-          </p>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setSelected(new Set())}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              {t('clearSelection')}
-            </Button>
-            <GatedButton
-              variant="destructive"
-              size="sm"
-              canAct={canEdit}
-              gateReason="delete contacts"
-              onClick={() => setBulkDeleteOpen(true)}
-            >
-              <Trash2 className="size-4" />
-              {t('deleteSelected')}
-            </GatedButton>
+      {bulkSelectedCount > 0 && accountId && (
+        <div className="space-y-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium text-foreground">
+              {selectAllMatching
+                ? `All ${totalCount.toLocaleString()} matching contacts selected`
+                : t('selectedCount', { count: selected.size })}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={clearSelection} className="text-muted-foreground hover:text-foreground">
+                {t('clearSelection')}
+              </Button>
+              <GatedButton
+                size="sm"
+                canAct={canEdit}
+                gateReason="create broadcast"
+                onClick={handleCreateBroadcast}
+                disabled={bulkWorking}
+              >
+                {bulkWorking ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                Create Broadcast
+              </GatedButton>
+              <GatedButton
+                variant="outline"
+                size="sm"
+                canAct={canEdit}
+                gateReason="edit contact tags"
+                onClick={() => openBulkTagDialog('add')}
+              >
+                <Tags className="size-4" />
+                Add Tags
+              </GatedButton>
+              <GatedButton
+                variant="outline"
+                size="sm"
+                canAct={canEdit}
+                gateReason="edit contact tags"
+                onClick={() => openBulkTagDialog('remove')}
+              >
+                <Tags className="size-4" />
+                Remove Tags
+              </GatedButton>
+              <BulkContactAdvancedActions
+                accountId={accountId}
+                selectedIds={[...selected]}
+                allMatching={selectAllMatching}
+                filterTagIds={selectedTagIds}
+                search={search}
+                selectedCount={bulkSelectedCount}
+                canEdit={canEdit}
+                onChanged={fetchContacts}
+              />
+              <GatedButton
+                variant="destructive"
+                size="sm"
+                canAct={canEdit}
+                gateReason="delete contacts"
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 className="size-4" />
+                {t('deleteSelected')}
+              </GatedButton>
+            </div>
           </div>
+
+          {!selectAllMatching && allOnPageSelected && totalCount > selected.size && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{contacts.length} contacts on this page are selected.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectAllMatching(true);
+                  setSelected(new Set());
+                }}
+                className="font-medium text-primary hover:underline"
+              >
+                Select all {totalCount.toLocaleString()} matching contacts
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Table */}
-      <div className="rounded-lg border border-border overflow-hidden">
+      <div className="overflow-hidden rounded-lg border border-border">
         <Table>
           <TableHeader>
             <TableRow className="border-border hover:bg-transparent">
@@ -543,17 +693,18 @@ export default function ContactsPage() {
               </TableHead>
               <TableHead className="text-muted-foreground">{t('tableColumns.name')}</TableHead>
               <TableHead className="text-muted-foreground">{t('tableColumns.phone')}</TableHead>
-              <TableHead className="text-muted-foreground hidden md:table-cell">{t('tableColumns.email')}</TableHead>
-              <TableHead className="text-muted-foreground hidden lg:table-cell">{t('tableColumns.company')}</TableHead>
-              <TableHead className="text-muted-foreground hidden md:table-cell">{t('tableColumns.tags')}</TableHead>
-              <TableHead className="text-muted-foreground hidden lg:table-cell">{t('tableColumns.createdAt')}</TableHead>
-              <TableHead className="text-muted-foreground w-12" />
+              <TableHead className="hidden text-muted-foreground md:table-cell">{t('tableColumns.email')}</TableHead>
+              <TableHead className="hidden text-muted-foreground lg:table-cell">{t('tableColumns.company')}</TableHead>
+              <TableHead className="hidden text-muted-foreground md:table-cell">{t('tableColumns.tags')}</TableHead>
+              <TableHead className="hidden text-muted-foreground lg:table-cell">Last Broadcast</TableHead>
+              <TableHead className="hidden text-muted-foreground lg:table-cell">{t('tableColumns.createdAt')}</TableHead>
+              <TableHead className="w-12 text-muted-foreground" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="text-center py-12">
+                <TableCell colSpan={9} className="py-12 text-center">
                   <div className="flex flex-col items-center gap-2">
                     <Loader2 className="size-6 animate-spin text-primary" />
                     <p className="text-sm text-muted-foreground">{t('loading')}</p>
@@ -562,13 +713,11 @@ export default function ContactsPage() {
               </TableRow>
             ) : contacts.length === 0 ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="text-center py-12">
+                <TableCell colSpan={9} className="py-12 text-center">
                   <div className="flex flex-col items-center gap-2">
                     <Users className="size-8 text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">
-                      {hasActiveFilters
-                        ? t('noContactsMatch')
-                        : t('noContactsYet')}
+                      {hasActiveFilters ? t('noContactsMatch') : t('noContactsYet')}
                     </p>
                     {!hasActiveFilters && (
                       <GatedButton
@@ -590,26 +739,25 @@ export default function ContactsPage() {
               contacts.map((contact) => (
                 <TableRow
                   key={contact.id}
-                  className="border-border hover:bg-muted/50 cursor-pointer"
+                  className="cursor-pointer border-border hover:bg-muted/50"
                   onClick={() => openDetail(contact.id)}
                 >
-                  <TableCell onClick={(e) => e.stopPropagation()}>
+                  <TableCell onClick={(event) => event.stopPropagation()}>
                     <Checkbox
-                      checked={selected.has(contact.id)}
+                      checked={selectAllMatching || selected.has(contact.id)}
+                      disabled={selectAllMatching}
                       onCheckedChange={() => toggleSelect(contact.id)}
                       aria-label={`Select ${contact.name || contact.phone}`}
                     />
                   </TableCell>
-                  <TableCell className="text-foreground font-medium">
-                    {contact.name || <span className="text-muted-foreground italic">{t('unnamed')}</span>}
+                  <TableCell className="font-medium text-foreground">
+                    {contact.name || <span className="italic text-muted-foreground">{t('unnamed')}</span>}
                   </TableCell>
-                  <TableCell className="text-muted-foreground font-mono text-xs">
-                    {contact.phone}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground hidden md:table-cell text-sm">
+                  <TableCell className="font-mono text-xs text-muted-foreground">{contact.phone}</TableCell>
+                  <TableCell className="hidden text-sm text-muted-foreground md:table-cell">
                     {contact.email || <span className="text-muted-foreground">-</span>}
                   </TableCell>
-                  <TableCell className="text-muted-foreground hidden lg:table-cell text-sm">
+                  <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">
                     {contact.company || <span className="text-muted-foreground">-</span>}
                   </TableCell>
                   <TableCell className="hidden md:table-cell">
@@ -619,25 +767,38 @@ export default function ContactsPage() {
                           <span
                             key={tag.id}
                             className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-                            style={{
-                              backgroundColor: tag.color + '20',
-                              color: tag.color,
-                            }}
+                            style={{ backgroundColor: tag.color + '20', color: tag.color }}
                           >
                             {tag.name}
                           </span>
                         ))
                       ) : (
-                        <span className="text-muted-foreground text-xs">-</span>
+                        <span className="text-xs text-muted-foreground">-</span>
                       )}
                       {contact.tags && contact.tags.length > 3 && (
-                        <span className="text-[10px] text-muted-foreground">
-                          +{contact.tags.length - 3}
-                        </span>
+                        <span className="text-[10px] text-muted-foreground">+{contact.tags.length - 3}</span>
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-muted-foreground text-xs hidden lg:table-cell">
+                  <TableCell className="hidden text-xs lg:table-cell">
+                    {contact.last_broadcast_at ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className={isRecentBroadcast(contact.last_broadcast_at) ? 'font-medium text-amber-500' : 'text-muted-foreground'}>
+                          {formatLastBroadcast(contact.last_broadcast_at)}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(contact.last_broadcast_at).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">Never</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
                     {new Date(contact.created_at).toLocaleDateString('en-US', {
                       month: 'short',
                       day: 'numeric',
@@ -652,19 +813,16 @@ export default function ContactsPage() {
                             variant="ghost"
                             size="icon-sm"
                             className="text-muted-foreground hover:text-foreground"
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
                           />
                         }
                       >
                         <MoreHorizontal className="size-4" />
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        align="end"
-                        className="bg-popover border-border"
-                      >
+                      <DropdownMenuContent align="end" className="border-border bg-popover">
                         <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={(event) => {
+                            event.stopPropagation();
                             openEditForm(contact);
                           }}
                           className="text-popover-foreground focus:bg-muted focus:text-foreground"
@@ -675,8 +833,8 @@ export default function ContactsPage() {
                         <DropdownMenuSeparator className="bg-border" />
                         <DropdownMenuItem
                           variant="destructive"
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={(event) => {
+                            event.stopPropagation();
                             confirmDelete(contact);
                           }}
                         >
@@ -693,14 +851,13 @@ export default function ContactsPage() {
         </Table>
       </div>
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
           <p className="text-xs text-muted-foreground">
             {t('showingPagination', {
               start: page * PAGE_SIZE + 1,
               end: Math.min((page + 1) * PAGE_SIZE, totalCount),
-              total: totalCount
+              total: totalCount,
             })}
           </p>
           <div className="flex items-center gap-1">
@@ -708,19 +865,17 @@ export default function ContactsPage() {
               variant="outline"
               size="icon-sm"
               disabled={!hasPrev}
-              onClick={() => setPage((p) => p - 1)}
+              onClick={() => setPage((value) => value - 1)}
               className="border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
             >
               <ChevronLeft className="size-4" />
             </Button>
-            <span className="text-xs text-muted-foreground px-2">
-              {t('pageCount', { page: page + 1, total: totalPages })}
-            </span>
+            <span className="px-2 text-xs text-muted-foreground">{t('pageCount', { page: page + 1, total: totalPages })}</span>
             <Button
               variant="outline"
               size="icon-sm"
               disabled={!hasNext}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => setPage((value) => value + 1)}
               className="border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
             >
               <ChevronRight className="size-4" />
@@ -729,7 +884,6 @@ export default function ContactsPage() {
         </div>
       )}
 
-      {/* Contact Form Dialog */}
       <ContactForm
         open={formOpen}
         onOpenChange={setFormOpen}
@@ -745,7 +899,6 @@ export default function ContactsPage() {
         }}
       />
 
-      {/* Contact Detail Sheet */}
       <ContactDetailView
         open={detailOpen}
         onOpenChange={setDetailOpen}
@@ -753,43 +906,25 @@ export default function ContactsPage() {
         onUpdated={fetchContacts}
       />
 
-      {/* Import Modal */}
-      <ImportModal
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        onImported={fetchContacts}
-      />
+      <ImportModal open={importOpen} onOpenChange={setImportOpen} onImported={fetchContacts} />
 
-      {/* Custom Fields Manager (admin+) */}
       {canEditSettings && (
-        <CustomFieldsManager
-          open={customFieldsOpen}
-          onOpenChange={setCustomFieldsOpen}
-        />
+        <CustomFieldsManager open={customFieldsOpen} onOpenChange={setCustomFieldsOpen} />
       )}
 
-      {/* Delete Confirmation */}
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <DialogContent className="bg-popover border-border text-popover-foreground sm:max-w-sm">
+        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-popover-foreground">{t('deleteContactTitle')}</DialogTitle>
             <DialogDescription className="text-muted-foreground">
               {t('deleteContactDesc', { name: deleteTarget?.name || deleteTarget?.phone || '' })}
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="bg-popover border-border">
-            <Button
-              variant="outline"
-              onClick={() => setDeleteConfirmOpen(false)}
-              className="border-border text-muted-foreground hover:bg-muted"
-            >
+          <DialogFooter className="border-border bg-popover">
+            <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)} className="border-border text-muted-foreground hover:bg-muted">
               {t('cancel')}
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={deleting}
-            >
+            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
               {deleting && <Loader2 className="size-4 animate-spin" />}
               {t('deleteBtn')}
             </Button>
@@ -797,36 +932,85 @@ export default function ContactsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Bulk Delete Confirmation */}
-      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
-        <DialogContent className="bg-popover border-border text-popover-foreground sm:max-w-sm">
+      <Dialog open={bulkTagOpen} onOpenChange={setBulkTagOpen}>
+        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-popover-foreground">
-              {t('deleteBulkTitle')}
+            <DialogTitle>
+              {bulkTagMode === 'add' ? 'Add tags' : 'Remove tags'}
             </DialogTitle>
-            <DialogDescription className="text-muted-foreground">
-              {t('deleteBulkDesc', { count: selected.size })}
+            <DialogDescription>
+              Apply this action to {bulkSelectedCount.toLocaleString()} selected contacts.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="bg-popover border-border">
-            <Button
-              variant="outline"
-              onClick={() => setBulkDeleteOpen(false)}
-              className="border-border text-muted-foreground hover:bg-muted"
-            >
+          <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+            {allTags.length === 0 ? (
+              <p className="px-2 py-6 text-center text-sm text-muted-foreground">No tags found.</p>
+            ) : (
+              allTags.map((tag) => (
+                <label key={tag.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 hover:bg-muted/50">
+                  <Checkbox
+                    checked={bulkTagIds.includes(tag.id)}
+                    onCheckedChange={() => toggleBulkTag(tag.id)}
+                  />
+                  <span className="size-2.5 rounded-full" style={{ backgroundColor: tag.color }} />
+                  <span className="text-sm">{tag.name}</span>
+                </label>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkTagOpen(false)} disabled={bulkWorking}>
+              Cancel
+            </Button>
+            <Button onClick={handleBulkTags} disabled={bulkWorking || bulkTagIds.length === 0}>
+              {bulkWorking && <Loader2 className="size-4 animate-spin" />}
+              {bulkTagMode === 'add' ? 'Add selected tags' : 'Remove selected tags'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <DialogContent className="border-border bg-popover text-popover-foreground sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-popover-foreground">{t('deleteBulkTitle')}</DialogTitle>
+            <DialogDescription className="space-y-2 text-muted-foreground">
+              <span className="block">{t('deleteBulkDesc', { count: bulkSelectedCount })}</span>
+              {selectAllMatching && (
+                <span className="block font-medium text-destructive">
+                  This will delete every contact matching the current search and tag filters across all pages.
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="border-border bg-popover">
+            <Button variant="outline" onClick={() => setBulkDeleteOpen(false)} className="border-border text-muted-foreground hover:bg-muted">
               {t('cancel')}
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleBulkDelete}
-              disabled={deleting}
-            >
+            <Button variant="destructive" onClick={handleBulkDelete} disabled={deleting}>
               {deleting && <Loader2 className="size-4 animate-spin" />}
-              {t('deleteBtn')}
+              Delete {bulkSelectedCount.toLocaleString()}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
   );
+}
+
+function formatLastBroadcast(value: string): string {
+  const sentAt = new Date(value);
+  const diffMs = Date.now() - sentAt.getTime();
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return sentAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function isRecentBroadcast(value: string): boolean {
+  return Date.now() - new Date(value).getTime() < 7 * 24 * 60 * 60 * 1000;
 }

@@ -24,8 +24,8 @@ interface Calls {
   rpcs: { name: string; args: Record<string, unknown> }[];
 }
 
-function makeDb(rows: Row[], calls: Calls) {
-  const from = () => {
+function makeDb(rows: Row[], calls: Calls, conversationContactId = 'contact-1') {
+  const from = (table: string) => {
     let mode: 'select' | 'update' = 'select';
     let payload: Record<string, unknown> = {};
     let id: string | null = null;
@@ -41,6 +41,14 @@ function makeDb(rows: Row[], calls: Calls) {
         return b;
       },
       contains: () => Promise.resolve({ data: rows, error: null }),
+      maybeSingle: () =>
+        Promise.resolve({
+          data:
+            table === 'conversations'
+              ? { contact_id: conversationContactId }
+              : null,
+          error: null,
+        }),
       then: (resolve: (v: unknown) => unknown) => {
         if (mode === 'update' && id) calls.updates.push({ id, payload });
         return resolve({ data: null, error: null });
@@ -86,6 +94,61 @@ describe('dispatchWebhookEvent', () => {
     expect(JSON.parse(opts.body).id).toMatch(/[0-9a-f-]{36}/);
     expect(calls.updates[0]).toMatchObject({ id: 'a', payload: { failure_count: 0 } });
     expect(calls.rpcs).toHaveLength(0);
+  });
+
+  it.each(['pending', 'sent', 'delivered', 'read', 'failed'] as const)(
+    'adds the owning WACRM contact_id to message.status_updated (%s)',
+    async (status) => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
+      vi.stubGlobal('fetch', fetchMock);
+      const calls = emptyCalls();
+
+      await dispatchWebhookEvent(
+        makeDb([{ id: 'status-hook', url: 'https://crm.test/hook', secret: 's1' }], calls, 'contact-42'),
+        'acct-1',
+        'message.status_updated',
+        {
+          whatsapp_message_id: 'wamid.42',
+          conversation_id: 'conversation-42',
+          status,
+        },
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, opts] = fetchMock.mock.calls[0];
+      const body = JSON.parse(opts.body);
+      expect(body.event).toBe('message.status_updated');
+      expect(body.data).toEqual({
+        whatsapp_message_id: 'wamid.42',
+        conversation_id: 'conversation-42',
+        status,
+        contact_id: 'contact-42',
+      });
+    },
+  );
+
+  it('keeps contact_id stable across repeated status deliveries for the same conversation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+    const calls = emptyCalls();
+    const db = makeDb(
+      [{ id: 'status-hook', url: 'https://crm.test/hook', secret: 's1' }],
+      calls,
+      'contact-stable',
+    );
+
+    for (const status of ['delivered', 'read'] as const) {
+      await dispatchWebhookEvent(db, 'acct-1', 'message.status_updated', {
+        whatsapp_message_id: 'wamid.same',
+        conversation_id: 'conversation-same',
+        status,
+      });
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const payloads = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(payloads[0].data.contact_id).toBe('contact-stable');
+    expect(payloads[1].data.contact_id).toBe('contact-stable');
   });
 
   it('records an atomic failure (RPC) when the endpoint errors', async () => {

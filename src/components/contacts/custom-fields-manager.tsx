@@ -71,6 +71,7 @@ export function CustomFieldsPanel() {
     const { data } = await supabase
       .from('custom_fields')
       .select('*')
+      .eq('account_id', accountId)
       .order('field_name');
     setFields((data as CustomField[] | null) ?? []);
     setLoading(false);
@@ -140,7 +141,8 @@ export function CustomFieldsPanel() {
     const { error } = await supabase
       .from('custom_fields')
       .update({ field_name: name })
-      .eq('id', field.id);
+      .eq('id', field.id)
+      .eq('account_id', accountId);
     setBusyId(null);
     if (error) {
       toast.error(t('toastRenameFailed'));
@@ -162,7 +164,8 @@ export function CustomFieldsPanel() {
     const { error } = await supabase
       .from('custom_fields')
       .delete()
-      .eq('id', field.id);
+      .eq('id', field.id)
+      .eq('account_id', accountId);
     setBusyId(null);
     if (error) {
       toast.error(t('toastDeleteFailed'));

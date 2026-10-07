@@ -14,13 +14,22 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
+import { ArrowLeft, Send, Loader2, Users, Save, CalendarClock } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
 
 interface AudienceConfig {
   type: string;
   tagIds?: string[];
+  customField?: {
+    fieldId: string;
+    operator: 'is' | 'is_not' | 'contains';
+    value: string;
+  };
   csvContacts?: { phone: string; name?: string }[];
+  excludeTagIds?: string[];
+  smartListId?: string;
+  smartListName?: string;
 }
 
 interface Step4Props {
@@ -29,6 +38,7 @@ interface Step4Props {
   template: MessageTemplate;
   audience: AudienceConfig;
   onSend: () => void;
+  onSchedule: (scheduledAt: string) => void;
   onSaveDraft?: () => void;
   onBack: () => void;
   isProcessing: boolean;
@@ -41,67 +51,154 @@ export function Step4ScheduleSend({
   template,
   audience,
   onSend,
+  onSchedule,
   onSaveDraft,
   onBack,
   isProcessing,
   progress,
 }: Step4Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
   const [showConfirm, setShowConfirm] = useState(false);
+  const [deliveryMode, setDeliveryMode] = useState<'now' | 'scheduled'>('now');
+  const [scheduledLocal, setScheduledLocal] = useState('');
   const [estimatedReach, setEstimatedReach] = useState<number>(0);
   const [loadingReach, setLoadingReach] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function calculateReach() {
       setLoadingReach(true);
       try {
         const supabase = createClient();
 
+        if (audience.type === 'smart_list' && audience.smartListId) {
+          const { data, error } = await supabase.rpc('count_smart_list_contacts', {
+            p_smart_list_id: audience.smartListId,
+          });
+          if (!cancelled) setEstimatedReach(error ? 0 : Number(data ?? 0));
+          return;
+        }
+
+        if (audience.type === 'csv' && audience.csvContacts) {
+          if (!cancelled) setEstimatedReach(audience.csvContacts.length);
+          return;
+        }
+
+        if (!accountId) {
+          if (!cancelled) setEstimatedReach(0);
+          return;
+        }
+
+        let baseIds: Set<string> | null = null;
+        let allContactsCount: number | null = null;
+
         if (audience.type === 'all') {
-          const { count } = await supabase
+          const { count, error } = await supabase
             .from('contacts')
-            .select('*', { count: 'exact', head: true });
-          setEstimatedReach(count ?? 0);
-        } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
-          const { data: contactTags } = await supabase
+            .select('*', { count: 'exact', head: true })
+            .eq('account_id', accountId);
+          if (error) throw error;
+          allContactsCount = count ?? 0;
+        } else if (
+          audience.type === 'tags' &&
+          audience.tagIds &&
+          audience.tagIds.length > 0
+        ) {
+          const { data, error } = await supabase
             .from('contact_tags')
             .select('contact_id')
             .in('tag_id', audience.tagIds);
+          if (error) throw error;
+          baseIds = new Set((data ?? []).map((row) => row.contact_id));
+        } else if (
+          audience.type === 'custom_field' &&
+          audience.customField?.fieldId &&
+          audience.customField.value
+        ) {
+          const { fieldId, operator, value } = audience.customField;
+          let query = supabase
+            .from('contact_custom_values')
+            .select('contact_id')
+            .eq('custom_field_id', fieldId);
 
-          const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
-          setEstimatedReach(uniqueIds.size);
-        } else if (audience.type === 'csv' && audience.csvContacts) {
-          setEstimatedReach(audience.csvContacts.length);
+          if (operator === 'is') query = query.eq('value', value);
+          else if (operator === 'is_not') query = query.neq('value', value);
+          else query = query.ilike('value', `%${value}%`);
+
+          const { data, error } = await query;
+          if (error) throw error;
+          baseIds = new Set((data ?? []).map((row) => row.contact_id));
         } else {
-          setEstimatedReach(0);
+          if (!cancelled) setEstimatedReach(0);
+          return;
         }
+
+        let excludedIds = new Set<string>();
+        if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
+          const { data, error } = await supabase
+            .from('contact_tags')
+            .select('contact_id')
+            .in('tag_id', audience.excludeTagIds);
+          if (error) throw error;
+          excludedIds = new Set((data ?? []).map((row) => row.contact_id));
+        }
+
+        const reach =
+          baseIds === null
+            ? Math.max(0, (allContactsCount ?? 0) - excludedIds.size)
+            : [...baseIds].filter((id) => !excludedIds.has(id)).length;
+
+        if (!cancelled) setEstimatedReach(reach);
+      } catch (error) {
+        console.error('Failed to calculate broadcast reach:', error);
+        if (!cancelled) setEstimatedReach(0);
       } finally {
-        setLoadingReach(false);
+        if (!cancelled) setLoadingReach(false);
       }
     }
 
     calculateReach();
-  }, [audience]);
+    return () => {
+      cancelled = true;
+    };
+  }, [audience, accountId]);
+
+  const browserTimezone =
+    typeof Intl !== 'undefined'
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : 'Local time';
+
+  const scheduledDate = scheduledLocal ? new Date(scheduledLocal) : null;
+  const scheduleValid =
+    Boolean(scheduledDate) &&
+    !Number.isNaN(scheduledDate!.getTime()) &&
+    scheduledDate!.getTime() >= Date.now() + 60_000;
+
+  function submitSchedule() {
+    if (!scheduledDate || !scheduleValid) return;
+    onSchedule(scheduledDate.toISOString());
+  }
 
   const audienceLabel =
-    audience.type === 'all'
-      ? t('scheduleSend.audienceAll')
-      : audience.type === 'tags'
-        ? t('scheduleSend.audienceTags')
-        : audience.type === 'csv'
-          ? t('scheduleSend.audienceCsv')
-          : t('scheduleSend.audienceField');
+    audience.type === 'smart_list'
+      ? `Smart List${audience.smartListName ? ` · ${audience.smartListName}` : ''}`
+      : audience.type === 'all'
+        ? t('scheduleSend.audienceAll')
+        : audience.type === 'tags'
+          ? t('scheduleSend.audienceTags')
+          : audience.type === 'csv'
+            ? t('scheduleSend.audienceCsv')
+            : t('scheduleSend.audienceField');
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold text-foreground">{t('scheduleSend.title')}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t('scheduleSend.subtitle')}
-        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{t('scheduleSend.subtitle')}</p>
       </div>
 
-      {/* Broadcast Name */}
       <div>
         <label className="mb-1.5 block text-sm font-medium text-foreground">{t('scheduleSend.broadcastName')}</label>
         <Input
@@ -112,19 +209,18 @@ export function Step4ScheduleSend({
         />
       </div>
 
-      {/* Summary Card */}
-      <div className="rounded-xl border border-border bg-card/50 p-4 space-y-3">
+      <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
         <p className="text-sm font-medium text-foreground">{t('scheduleSend.summary')}</p>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div>
+        <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{t('scheduleSend.template')}</p>
-            <p className="text-foreground">{template.name}</p>
+            <p className="break-all text-foreground">{template.name}</p>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{t('scheduleSend.audience')}</p>
-            <p className="text-foreground">{audienceLabel}</p>
+            <p className="break-words text-foreground">{audienceLabel}</p>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">Estimated Reach</p>
             <div className="flex items-center gap-1.5">
               {loadingReach ? (
@@ -137,14 +233,66 @@ export function Step4ScheduleSend({
               )}
             </div>
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">Language</p>
-            <p className="text-foreground">{template.language ?? 'en_US'}</p>
+            <p className="break-words text-foreground">{template.language ?? 'en_US'}</p>
           </div>
         </div>
       </div>
 
-      {/* Processing overlay */}
+      <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Delivery timing</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Send immediately or schedule this broadcast for a specific date and time.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={deliveryMode === 'now' ? 'default' : 'outline'}
+            onClick={() => setDeliveryMode('now')}
+            disabled={isProcessing}
+          >
+            <Send className="h-4 w-4" />
+            Send now
+          </Button>
+          <Button
+            type="button"
+            variant={deliveryMode === 'scheduled' ? 'default' : 'outline'}
+            onClick={() => setDeliveryMode('scheduled')}
+            disabled={isProcessing}
+          >
+            <CalendarClock className="h-4 w-4" />
+            Schedule
+          </Button>
+        </div>
+
+        {deliveryMode === 'scheduled' && (
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-foreground">
+              Date & time
+            </label>
+            <Input
+              type="datetime-local"
+              value={scheduledLocal}
+              onChange={(event) => setScheduledLocal(event.target.value)}
+              min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+              className="border-border bg-muted text-foreground"
+            />
+            <p className="text-xs text-muted-foreground">
+              Timezone: {browserTimezone}. The exact moment is stored in UTC.
+            </p>
+            {scheduledLocal && !scheduleValid && (
+              <p className="text-xs text-red-400">
+                Choose a time at least 1 minute in the future.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       {isProcessing && (
         <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -187,50 +335,61 @@ export function Step4ScheduleSend({
             </Button>
           )}
 
+          {deliveryMode === 'scheduled' ? (
+            <Button
+              onClick={submitSchedule}
+              disabled={!name.trim() || isProcessing || estimatedReach === 0 || !scheduleValid}
+              className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              <CalendarClock className="h-4 w-4" />
+              Schedule Broadcast
+            </Button>
+          ) : (
           <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
-          <DialogTrigger
-            render={
-              <Button
-                disabled={!name.trim() || isProcessing}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              />
-            }
-          >
-            <Send className="h-4 w-4" />
-            {t('scheduleSend.sendNow')}
-          </DialogTrigger>
-          <DialogContent className="border-border bg-popover sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="text-popover-foreground">Confirm Broadcast</DialogTitle>
-              <DialogDescription className="text-muted-foreground">
-                You are about to send this broadcast to{' '}
-                <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
-                contacts using the{' '}
-                <span className="font-medium text-popover-foreground">{template.name}</span> template.
-                This action cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setShowConfirm(false)}
-                className="border-border text-muted-foreground"
-              >
-                {t('cancel')}
-              </Button>
-              <Button
-                onClick={() => {
-                  setShowConfirm(false);
-                  onSend();
-                }}
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                <Send className="h-4 w-4" />
-                {t('scheduleSend.sendNow')}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            <DialogTrigger
+              render={
+                <Button
+                  disabled={!name.trim() || isProcessing || estimatedReach === 0}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                />
+              }
+            >
+              <Send className="h-4 w-4" />
+              {t('scheduleSend.sendNow')}
+            </DialogTrigger>
+            <DialogContent className="border-border bg-popover sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-popover-foreground">Confirm Broadcast</DialogTitle>
+                <DialogDescription className="text-muted-foreground">
+                  You are about to send this broadcast to{' '}
+                  <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
+                  contacts using the{' '}
+                  <span className="break-all font-medium text-popover-foreground">{template.name}</span> template.
+                  This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowConfirm(false)}
+                  className="border-border text-muted-foreground"
+                >
+                  {t('cancel')}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowConfirm(false);
+                    onSend();
+                  }}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  <Send className="h-4 w-4" />
+                  {t('scheduleSend.sendNow')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          )}
         </div>
       </div>
     </div>

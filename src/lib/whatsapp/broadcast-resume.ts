@@ -153,7 +153,7 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, template_name, template_language')
+    .select('id, template_name, template_language, audience_filter')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -263,13 +263,27 @@ export async function planBroadcastResume(
     templateLanguage: resolvedTemplate.language,
     config,
     templateRow: resolvedTemplate.row,
-    planned: slice.map((row) => ({
-      recipientRowId: row.id,
-      phone: sanitizePhoneForMeta(contactPhone(row) ?? ''),
-      params: Array.isArray(row.template_params)
-        ? row.template_params.filter((p): p is string => typeof p === 'string')
-        : [],
-    })),
+    planned: slice.map((row) => {
+      const audienceFilter =
+        broadcast.audience_filter && typeof broadcast.audience_filter === 'object'
+          ? (broadcast.audience_filter as Record<string, unknown>)
+          : {};
+      const headerMediaUrl =
+        typeof audienceFilter.headerMediaUrl === 'string'
+          ? audienceFilter.headerMediaUrl.trim()
+          : '';
+
+      return {
+        recipientRowId: row.id,
+        phone: sanitizePhoneForMeta(contactPhone(row) ?? ''),
+        params: Array.isArray(row.template_params)
+          ? row.template_params.filter((p): p is string => typeof p === 'string')
+          : [],
+        ...(headerMediaUrl
+          ? { messageParams: { headerMediaUrl } }
+          : {}),
+      };
+    }),
     rejected: 0,
   };
 

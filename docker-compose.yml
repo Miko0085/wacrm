@@ -12,6 +12,7 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
         NEXT_PUBLIC_APP_LOCALE: ${NEXT_PUBLIC_APP_LOCALE:-en}
+        SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME:-sb-127-auth-token}
     # Runtime (server-only) secrets come from .env.local; they are
     # never baked into the image.
     env_file:
@@ -22,6 +23,8 @@ services:
     # healthcheck below.
     environment:
       PORT: 3000
+      SUPABASE_INTERNAL_URL: ${SUPABASE_INTERNAL_URL:-http://host.docker.internal:55431}
+      SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME:-sb-127-auth-token}
     # Host side only — HOST_PORT=8080 publishes the app on :8080.
     ports:
       - '${HOST_PORT:-3000}:3000'

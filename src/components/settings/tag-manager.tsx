@@ -58,21 +58,21 @@ export function TagManager() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!user || !accountId) {
       setLoading(false);
       return;
     }
-    fetchTags(user.id);
+    fetchTags(accountId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user?.id]);
+  }, [authLoading, user?.id, accountId]);
 
-  async function fetchTags(userId: string) {
+  async function fetchTags(activeAccountId: string) {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('tags')
         .select('*')
-        .eq('user_id', userId)
+        .eq('account_id', activeAccountId)
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -112,7 +112,7 @@ export function TagManager() {
       toast.success(t('tagCreated'));
       setNewTagName('');
       setSelectedColor(PRESET_COLORS[3].value);
-      await fetchTags(user.id);
+      await fetchTags(accountId);
     } catch (err) {
       console.error('Create error:', err);
       toast.error(t('failedToCreateTag'));
@@ -134,7 +134,8 @@ export function TagManager() {
       const { error } = await supabase
         .from('tags')
         .delete()
-        .eq('id', tagToDelete.id);
+        .eq('id', tagToDelete.id)
+        .eq('account_id', accountId!);
 
       if (error) throw error;
 

@@ -9,6 +9,7 @@ import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { recordBusinessEvent } from '@/lib/business-events/record'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -18,6 +19,15 @@ interface DispatchArgs {
   /** The account's WhatsApp config owner, used for the outbound send's
    *  audit columns (mirrors how the flow runner passes it through). */
   configOwnerUserId: string
+  /**
+   * True when this inbound turn was already answered (or a Flow was started)
+   * by a deterministic responder — an Automation that attempted a
+   * customer-facing step. The inbound pipeline derives it from the ACTUAL
+   * automation dispatch result, so tag-only / CRM-only / webhook-only
+   * automations never mute the AI, and a responder that failed after trying
+   * to send never causes a second, parallel AI reply.
+   */
+  deterministicResponderHandled?: boolean
 }
 
 /**
@@ -43,29 +53,13 @@ export async function dispatchInboundToAiReply(
   args: DispatchArgs,
 ): Promise<void> {
   const { accountId, conversationId, contactId, configOwnerUserId } = args
+  if (args.deterministicResponderHandled) return
 
   try {
     const db = supabaseAdmin()
 
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
-
-    // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
-    const { data: autoResponders } = await db
-      .from('automations')
-      .select('id')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-      .limit(1)
-    if (autoResponders && autoResponders.length > 0) return
 
     const { data: conv, error: convErr } = await db
       .from('conversations')
@@ -154,6 +148,21 @@ export async function dispatchInboundToAiReply(
         update.assigned_agent_id = config.handoffAgentId
       }
       await db.from('conversations').update(update).eq('id', conversationId)
+
+      const payload = {
+        reason: 'ai_handoff',
+        summary,
+        assigned_agent_id: config.handoffAgentId ?? null,
+      }
+      await recordBusinessEvent(db, {
+        accountId,
+        userId: configOwnerUserId,
+        contactId,
+        conversationId,
+        eventType: 'human_handoff_requested',
+        source: 'ai_auto_reply',
+        payload,
+      })
       return
     }
 

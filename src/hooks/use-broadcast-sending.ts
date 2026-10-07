@@ -55,6 +55,10 @@ interface BroadcastPayload {
 
 interface UseBroadcastSendingReturn {
   createAndSendBroadcast: (payload: BroadcastPayload) => Promise<string>;
+  createScheduledBroadcast: (
+    payload: BroadcastPayload,
+    scheduledAt: string,
+  ) => Promise<string>;
   isProcessing: boolean;
   progress: number;
 }
@@ -168,7 +172,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     let contacts: Contact[] = [];
 
     if (audience.type === 'all') {
-      const { data, error } = await supabase.from('contacts').select('*');
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('account_id', accountId);
       if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
       contacts = data ?? [];
     } else if (
@@ -342,6 +349,123 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       .in('id', contactIds);
     if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
     return data ?? [];
+  }
+
+  async function createScheduledBroadcast(
+    payload: BroadcastPayload,
+    scheduledAt: string,
+  ): Promise<string> {
+    setIsProcessing(true);
+    setProgress(0);
+
+    const supabase = createClient();
+
+    try {
+      const scheduledDate = new Date(scheduledAt);
+      if (
+        Number.isNaN(scheduledDate.getTime()) ||
+        scheduledDate.getTime() < Date.now() + 60_000
+      ) {
+        throw new Error('Choose a scheduled time at least 1 minute in the future.');
+      }
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const user = session?.user;
+      if (!user) throw new Error('You are not signed in.');
+      if (!accountId) throw new Error('Your profile is not linked to an account.');
+
+      setProgress(10);
+      const contacts = await resolveAudience(payload.audience);
+      if (contacts.length === 0) {
+        throw new Error('No contacts found for this audience.');
+      }
+
+      const audienceFilter = {
+        type: payload.audience.type,
+        tagIds: payload.audience.tagIds,
+        customField: payload.audience.customField,
+        csvContacts: payload.audience.csvContacts,
+        excludeTagIds: payload.audience.excludeTagIds,
+        headerMediaUrl: payload.headerMediaUrl?.trim() || undefined,
+        resolvedCount: contacts.length,
+        resolvedAt: new Date().toISOString(),
+      };
+
+      setProgress(25);
+      const { data: broadcast, error: broadcastError } = await supabase
+        .from('broadcasts')
+        .insert({
+          user_id: user.id,
+          account_id: accountId,
+          name: payload.name,
+          template_name: payload.template.name,
+          template_language: payload.template.language ?? 'en_US',
+          template_variables: payload.variables,
+          audience_filter: audienceFilter,
+          scheduled_at: scheduledDate.toISOString(),
+          status: 'scheduled',
+          total_recipients: contacts.length,
+          sent_count: 0,
+          delivered_count: 0,
+          read_count: 0,
+          replied_count: 0,
+          failed_count: 0,
+        })
+        .select()
+        .single();
+
+      if (broadcastError || !broadcast) {
+        throw new Error(
+          `Failed to create scheduled broadcast: ${broadcastError?.message ?? 'unknown error'}`,
+        );
+      }
+
+      setProgress(50);
+      const customValueIndex = await fetchCustomValueIndex(
+        supabase,
+        contacts.map((c) => c.id),
+      );
+      const recipientRows = contacts.map((contact) => ({
+        broadcast_id: broadcast.id,
+        contact_id: contact.id,
+        status: 'pending' as const,
+        template_params: resolveVariables(
+          payload.variables,
+          contact,
+          customValueIndex.get(contact.id),
+        ),
+      }));
+
+      try {
+        for (let i = 0; i < recipientRows.length; i += INSERT_BATCH_SIZE) {
+          const batch = recipientRows.slice(i, i + INSERT_BATCH_SIZE);
+          const { error } = await supabase
+            .from('broadcast_recipients')
+            .insert(batch);
+          if (error) throw error;
+          setProgress(
+            50 + Math.round(((i + batch.length) / recipientRows.length) * 45),
+          );
+        }
+      } catch (error) {
+        await supabase
+          .from('broadcasts')
+          .update({ status: 'failed' })
+          .eq('id', broadcast.id);
+        throw new Error(
+          `Failed to prepare scheduled recipients: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+      }
+
+      setProgress(100);
+      return broadcast.id;
+    } finally {
+      setIsProcessing(false);
+    }
   }
 
   async function createAndSendBroadcast(payload: BroadcastPayload): Promise<string> {
@@ -615,5 +739,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     }
   }
 
-  return { createAndSendBroadcast, isProcessing, progress };
+  return {
+    createAndSendBroadcast,
+    createScheduledBroadcast,
+    isProcessing,
+    progress,
+  };
 }

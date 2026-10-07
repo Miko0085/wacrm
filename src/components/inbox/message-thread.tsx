@@ -168,7 +168,7 @@ export function MessageThread({
   const tTimer = useTranslations("Inbox.sessionTimer");
   const tQuote = useTranslations("Inbox.replyQuote");
 
-  const { user } = useAuth();
+  const { user, accountId } = useAuth();
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -212,13 +212,18 @@ export function MessageThread({
   // see — today that's just the current user, but the dropdown keeps the
   // shape ready for shared-team workspaces without a refactor.
   useEffect(() => {
+    if (!accountId) return;
     let cancelled = false;
     const supabase = createClient();
     supabase
-      .from("profiles")
-      .select("*")
-      .order("full_name")
-      .then(({ data, error }) => {
+      .from("account_memberships")
+      .select("user_id")
+      .eq("account_id", accountId!)
+      .then(async ({ data: memberships, error }) => {
+        const ids = (memberships ?? []).map((row) => row.user_id);
+        const { data } = ids.length
+          ? await supabase.from("profiles").select("*").in("user_id", ids).order("full_name")
+          : { data: [] };
         if (cancelled) return;
         if (error) {
           console.error("Failed to fetch profiles:", error);
@@ -229,7 +234,7 @@ export function MessageThread({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accountId]);
 
   // 24-hour session timer
   const sessionInfo = useMemo(() => {
@@ -450,6 +455,7 @@ export function MessageThread({
       .from("conversations")
       .update({ unread_count: 0 })
       .eq("id", conversationId)
+      .eq("account_id", accountId!)
       .then(({ error }) => {
         if (error) console.error("Failed to reset unread_count:", error);
       });
@@ -647,7 +653,8 @@ export function MessageThread({
       await supabase
         .from("conversations")
         .update({ status })
-        .eq("id", conversation.id);
+        .eq("id", conversation.id)
+        .eq("account_id", accountId!);
 
       onStatusChange(conversation.id, status);
     },
@@ -847,7 +854,8 @@ export function MessageThread({
       const { error } = await supabase
         .from("conversations")
         .update({ assigned_agent_id: agentId })
-        .eq("id", conversation.id);
+        .eq("id", conversation.id)
+        .eq("account_id", accountId!);
 
       if (error) {
         console.error("Failed to update assignment:", error);

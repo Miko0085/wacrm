@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { requireActiveAccount } from '@/lib/auth/account'
 
 export async function GET(
   request: Request,
@@ -35,18 +36,7 @@ export async function GET(
     // account post-multi-user, so a teammate fetching media for a
     // conversation in the shared inbox needs the account's config,
     // not their personal (non-existent) row.
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('account_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    const accountId = profile?.account_id as string | undefined
-    if (!accountId) {
-      return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
-        { status: 403 },
-      )
-    }
+    const accountId = (await requireActiveAccount()).accountId
 
     // Fetch and decrypt WhatsApp config
     const { data: config, error: configError } = await supabase

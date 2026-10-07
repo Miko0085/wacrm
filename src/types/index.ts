@@ -228,8 +228,7 @@ export interface Message {
   media_url?: string;
   /**
    * MIME type of `media_url`'s content, as Meta reported it. Inbound
-   * media only — outbound URLs already carry a filename and extension.
-   * Null on every row written before migration 039.
+   * media only — null on every row written before migration 039.
    */
   media_type?: string | null;
   template_name?: string;
@@ -237,26 +236,8 @@ export interface Message {
   status: MessageStatus;
   created_at: string;
   reply_to_message_id?: string;
-  /**
-   * Only set when `content_type === 'interactive'` — the stable id of
-   * the button or list row the customer tapped. The Flows engine uses
-   * this to route the next node; the inbox bubble uses it as a styling
-   * cue (renders with a "↩ button reply" affordance).
-   */
   interactive_reply_id?: string;
-  /**
-   * Structured payload of an OUTBOUND interactive message (reply
-   * buttons or list) we sent. Lets the thread re-render the buttons /
-   * rows, not just the body text. Only set when `content_type ===
-   * 'interactive'` and `sender_type` is agent/bot. Migration 035.
-   */
   interactive_payload?: InteractiveMessagePayload;
-  /**
-   * True when the AI auto-reply bot generated + sent this message (as
-   * opposed to a human agent or a deterministic Flow/automation send,
-   * which all share `sender_type='bot'`/`'agent'`). Drives the "AI"
-   * badge in the inbox. Migration 033.
-   */
   ai_generated?: boolean;
 }
 
@@ -277,46 +258,25 @@ export type WhatsAppProviderId = 'meta' | 'gupshup';
 export interface WhatsAppConfig {
   id: string;
   user_id: string;
-  /** Which WhatsApp API this account's WhatsApp connection is on. Defaults to 'meta' for every pre-existing row. */
   provider: WhatsAppProviderId;
-  /** Meta-only from here down — null on a Gupshup-only row. */
   phone_number_id?: string;
   waba_id?: string;
   access_token?: string;
   verify_token?: string;
-  /** Gupshup-only from here down — null on a Meta-only row. */
   gupshup_api_key?: string;
   gupshup_app_id?: string;
   gupshup_app_name?: string;
   gupshup_source_phone_number?: string;
   gupshup_connected_at?: string;
-  /** Random per-account secret path segment for the Gupshup inbound webhook URL — see docs/GUPSHUP_INTEGRATION.md (no HMAC signature exists on Gupshup callbacks). */
   gupshup_webhook_token?: string;
   status: 'connected' | 'disconnected';
   connected_at?: string;
-  /**
-   * Set when POST /{phone_number_id}/register last succeeded. NULL
-   * means the number was saved but never actually subscribed for
-   * webhooks on Meta's side — inbound events will be silently lost.
-   */
   registered_at?: string;
-  /** Set when POST /{waba_id}/subscribed_apps last succeeded. */
   subscribed_apps_at?: string;
-  /** Last error from /register; cleared on success. */
   last_registration_error?: string;
-  /**
-   * When true (the default), the inbound webhook copies received media
-   * into the `chat-media` bucket so attachments outlive Meta's ~30-day
-   * retention. Turning it off keeps storage flat and accepts that
-   * inbound attachments expire. Migration 039.
-   */
   mirror_inbound_media?: boolean;
 }
 
-// Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)
-// rather than collapsing to a local TitleCase set — distinctions like
-// PAUSED vs DISABLED vs IN_APPEAL drive the edit/resubmit/delete flows.
-// DRAFT is the local-only state before the row is submitted to Meta.
 export type MessageTemplateStatus =
   | 'DRAFT'
   | 'PENDING'
@@ -354,7 +314,6 @@ export interface MessageTemplate {
   sample_values?: TemplateSampleValues;
   status?: MessageTemplateStatus;
   meta_template_id?: string;
-  /** Gupshup's own template id — set when this row was synced/sent via the Gupshup provider. */
   gupshup_template_id?: string;
   rejection_reason?: string;
   quality_score?: 'GREEN' | 'YELLOW' | 'RED';
@@ -386,10 +345,6 @@ export interface Deal {
   user_id: string;
   pipeline_id: string;
   stage_id: string;
-  /**
-   * Nullable after migration 004 — becomes NULL when the referenced
-   * contact is deleted (ON DELETE SET NULL). History preserved.
-   */
   contact_id: string | null;
   conversation_id?: string;
   assigned_to?: string;
@@ -425,11 +380,6 @@ export interface Broadcast {
   read_count: number;
   replied_count: number;
   failed_count: number;
-  /**
-   * Set while a server-side delivery pass is fanning out, NULL when
-   * idle. Claimed with a conditional UPDATE so two resumes can't both
-   * send. Added in migration 038.
-   */
   delivery_locked_at?: string | null;
   created_at: string;
 }
@@ -437,11 +387,6 @@ export interface Broadcast {
 export interface BroadcastRecipient {
   id: string;
   broadcast_id: string;
-  /**
-   * Nullable after migration 004 — becomes NULL when the referenced
-   * contact is deleted (ON DELETE SET NULL). History preserved; the
-   * UI renders "Unknown" for orphaned rows.
-   */
   contact_id: string | null;
   status: RecipientStatus;
   sent_at?: string;
@@ -449,18 +394,7 @@ export interface BroadcastRecipient {
   read_at?: string;
   replied_at?: string;
   error_message?: string;
-  /**
-   * Meta's message id, persisted when the broadcast send succeeds so
-   * the webhook can mirror status updates back onto the recipient row.
-   * Added in migration 003.
-   */
   whatsapp_message_id?: string;
-  /**
-   * Positional body values for this recipient's template send
-   * ({{1}}, {{2}}, …), frozen when the broadcast was planned so a
-   * server-side resume reproduces the original pass exactly.
-   * Added in migration 038; null on rows created before it.
-   */
   template_params?: string[] | null;
   created_at: string;
   contact?: Contact;
@@ -478,15 +412,15 @@ export type AutomationTriggerType =
   | 'conversation_assigned'
   | 'tag_added'
   | 'time_based'
-  /** Customer tapped a reply button / list row whose id matches; lets
-   *  multi-step menus be chained across automations. */
-  | 'interactive_reply';
+  | 'interactive_reply'
+  | 'business_event';
 
 export type AutomationStepType =
   | 'send_message'
   | 'send_buttons'
   | 'send_list'
   | 'send_template'
+  | 'send_media'
   | 'add_tag'
   | 'remove_tag'
   | 'assign_conversation'
@@ -494,6 +428,10 @@ export type AutomationStepType =
   | 'create_deal'
   | 'wait'
   | 'condition'
+  | 'ai_classification'
+  | 'emit_business_event'
+  | 'send_telegram'
+  | 'start_flow'
   | 'send_webhook'
   | 'close_conversation';
 
@@ -501,14 +439,6 @@ export type AutomationLogStatus = 'success' | 'partial' | 'failed';
 
 export interface KeywordMatchTriggerConfig {
   keywords: string[];
-  /**
-   * `contains` (the default) is a raw substring test, so a short keyword
-   * matches inside longer words — "k" fires on "thanks". `word` is the
-   * boundary-aware alternative added for issue #409; see
-   * `matchesWholeWord` in `@/lib/automations/engine` for its exact
-   * semantics. Flows carry their own keyword config and stay
-   * substring-only (`@/lib/flows/types`).
-   */
   match_type: 'exact' | 'contains' | 'word';
   case_sensitive?: boolean;
 }
@@ -518,14 +448,16 @@ export interface TagTriggerConfig {
 }
 
 export interface TimeBasedTriggerConfig {
-  /** Cron expression or simple HH:mm string; engine can accept either. */
   schedule: string;
   timezone?: string;
 }
 
 export interface InteractiveReplyTriggerConfig {
-  /** Button / list-row ids to match, exact. Any one matching fires. */
   reply_ids: string[];
+}
+
+export interface BusinessEventTriggerConfig {
+  event_types: string[];
 }
 
 export type AutomationTriggerConfig =
@@ -534,17 +466,13 @@ export type AutomationTriggerConfig =
   | TagTriggerConfig
   | TimeBasedTriggerConfig
   | InteractiveReplyTriggerConfig
+  | BusinessEventTriggerConfig
   | Record<string, unknown>;
 
 export interface SendMessageStepConfig {
   text: string;
 }
 
-/**
- * `send_buttons` / `send_list` step configs carry the full interactive
- * payload (same shape stored on messages + quick replies). `kind` is
- * implied by the step_type but kept on the payload for a uniform shape.
- */
 export type SendButtonsStepConfig = InteractiveMessagePayload;
 export type SendListStepConfig = InteractiveMessagePayload;
 
@@ -552,6 +480,13 @@ export interface SendTemplateStepConfig {
   template_name: string;
   language?: string;
   variables?: Record<string, string>;
+}
+
+export interface SendMediaStepConfig {
+  media_type: 'image' | 'video' | 'document';
+  media_url: string;
+  caption?: string;
+  filename?: string;
 }
 
 export interface TagStepConfig {
@@ -564,15 +499,7 @@ export interface AssignConversationStepConfig {
 }
 
 export interface UpdateContactFieldStepConfig {
-  /**
-   * Either a built-in contact column (`name` | `email` | `company`) or a
-   * custom field encoded as `custom:<custom_field_id>`. The `custom:` prefix
-   * is how the engine distinguishes a `contact_custom_values` write from a
-   * direct `contacts` column update. Older configs store the bare column name,
-   * so this stays backward compatible.
-   */
   field: string;
-  /** Supports `{{ vars.* }}` / `{{ message.text }}` interpolation at runtime. */
   value: string;
 }
 
@@ -592,14 +519,38 @@ export type ConditionSubject =
   | 'contact_field'
   | 'tag_presence'
   | 'message_content'
-  | 'time_of_day';
+  | 'time_of_day'
+  | 'variable';
 
 export interface ConditionStepConfig {
   subject: ConditionSubject;
-  /** e.g. field name, tag id, substring, or "HH:mm-HH:mm" depending on subject */
   operand?: string;
-  /** For contact_field equals / message_content contains — comparison value */
   value?: string;
+}
+
+export interface AiClassificationStepConfig {
+  instruction: string;
+  input_template: string;
+  context_messages?: number;
+  positive_intent?: 'positive';
+  min_score?: number;
+}
+
+export interface EmitBusinessEventStepConfig {
+  event_type: string;
+  source?: string;
+  payload_template?: string;
+}
+
+export interface SendTelegramStepConfig {
+  connection_id: string;
+  chat_id?: string;
+  message: string;
+  parse_mode?: 'HTML' | 'Markdown' | 'MarkdownV2';
+}
+
+export interface StartFlowStepConfig {
+  flow_id: string;
 }
 
 export interface SendWebhookStepConfig {
@@ -613,24 +564,24 @@ export type AutomationStepConfig =
   | SendButtonsStepConfig
   | SendListStepConfig
   | SendTemplateStepConfig
+  | SendMediaStepConfig
   | TagStepConfig
   | AssignConversationStepConfig
   | UpdateContactFieldStepConfig
   | CreateDealStepConfig
   | WaitStepConfig
   | ConditionStepConfig
+  | AiClassificationStepConfig
+  | EmitBusinessEventStepConfig
+  | SendTelegramStepConfig
+  | StartFlowStepConfig
   | SendWebhookStepConfig
   | Record<string, never>
   | Record<string, unknown>;
 
 export interface Automation {
   id: string;
-  /** Account tenancy key — every automation belongs to one account
-   *  (migration 017 made the column NOT NULL). The engine looks up
-   *  active automations by this field on inbound webhook events. */
   account_id: string;
-  /** Original author. Used for log audit + outbound message
-   *  sender-of-record, never for tenancy isolation. */
   user_id: string;
   name: string;
   description?: string;
@@ -682,15 +633,11 @@ export type QuickReplyKind = 'text' | 'interactive';
 
 export interface QuickReply {
   id: string;
-  /** Account tenancy key — shared across all members of the account. */
   account_id: string;
-  /** Author / audit only. */
   user_id: string;
   title: string;
   kind: QuickReplyKind;
-  /** Set when `kind === 'text'`. */
   content_text?: string | null;
-  /** Set when `kind === 'interactive'`. */
   interactive_payload?: InteractiveMessagePayload | null;
   created_at: string;
   updated_at: string;

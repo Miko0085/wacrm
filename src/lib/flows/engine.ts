@@ -40,9 +40,16 @@ import {
   engineSendText,
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
+import { validateFlowForActivation } from "./validate";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
+import { recordBusinessEvent } from "@/lib/business-events/record";
 import {
+  classifyAutomationMessage,
+  classificationVars,
+} from "@/lib/automations/ai-classification";
+import {
+  type AiDecisionNodeConfig,
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DispatchInboundInput,
@@ -140,6 +147,7 @@ export function isAutoAdvancing(node_type: string): boolean {
     node_type === "send_message" ||
     node_type === "send_media" ||
     node_type === "condition" ||
+    node_type === "ai_decision" ||
     node_type === "set_tag"
   );
 }
@@ -470,8 +478,13 @@ async function executeHandoff(
   node: FlowNodeRow,
 ): Promise<void> {
   const cfg = node.config as { assign_to?: string; note?: string };
+  const renderedNote = cfg.note
+    ? interpolateVars(cfg.note, run.vars)
+    : "Flow requested human handoff";
   const convUpdate: Record<string, unknown> = {
     status: "pending",
+    ai_autoreply_disabled: true,
+    ai_handoff_summary: renderedNote,
     updated_at: new Date().toISOString(),
   };
   if (cfg.assign_to) convUpdate.assigned_agent_id = cfg.assign_to;
@@ -481,9 +494,30 @@ async function executeHandoff(
       .update(convUpdate)
       .eq("id", run.conversation_id);
   }
-  await logEvent(db, run.id, "handoff", node.node_key, {
-    note: cfg.note ?? null,
+  const eventPayload = {
+    reason: renderedNote || "flow_handoff",
+    summary: renderedNote || null,
+    flow_id: run.flow_id,
+    flow_run_id: run.id,
+    node_key: node.node_key,
     assigned_to: cfg.assign_to ?? null,
+    vars: run.vars,
+  };
+
+  const event = await recordBusinessEvent(db, {
+    accountId: run.account_id,
+    userId: run.user_id,
+    contactId: run.contact_id,
+    conversationId: run.conversation_id,
+    eventType: "human_handoff_requested",
+    source: "flow",
+    payload: eventPayload,
+  });
+
+  await logEvent(db, run.id, "handoff", node.node_key, {
+    note: renderedNote || null,
+    assigned_to: cfg.assign_to ?? null,
+    business_event_id: event.id,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
 }
@@ -738,6 +772,59 @@ async function advanceFromNodeKey(
       });
       continue;
     }
+    if (node.node_type === "ai_decision") {
+      const cfg = node.config as unknown as AiDecisionNodeConfig;
+      try {
+        const inputKey = cfg.input_var?.trim() || "last_customer_message";
+        const messageText = String(run.vars[inputKey] ?? "");
+        if (!messageText.trim()) {
+          throw new Error(`AI Decision input var "${inputKey}" is empty`);
+        }
+
+        const result = await classifyAutomationMessage({
+          db,
+          accountId: run.account_id,
+          conversationId: run.conversation_id ?? undefined,
+          messageText,
+          config: {
+            instruction: cfg.instruction,
+            input_template: "{{message.text}}",
+            context_messages: cfg.context_messages ?? 5,
+            positive_intent: "positive",
+            min_score: 60,
+          },
+        });
+
+        const nextVars = {
+          ...run.vars,
+          ...classificationVars(result),
+        };
+        const { error: varsErr } = await db
+          .from("flow_runs")
+          .update({ vars: nextVars, last_advanced_at: new Date().toISOString() })
+          .eq("id", run.id)
+          .eq("status", "active");
+        if (varsErr) throw varsErr;
+        run.vars = nextVars;
+
+        await logEvent(db, run.id, "node_entered", node.node_key, {
+          ai_primary_intent: result.primary_intent,
+          ai_confidence: result.confidence,
+          ai_requires_human: result.requires_human,
+          ai_safe_to_answer: result.safe_to_answer,
+        });
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "ai_decision_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "ai_decision_failed");
+        return { outcome: "completed" };
+      }
+
+      currentKey = cfg.next_node_key;
+      continue;
+    }
     if (node.node_type === "set_tag") {
       const cfg = node.config as unknown as SetTagNodeConfig;
       try {
@@ -861,6 +948,104 @@ async function advanceCurrentNodeKey(
 }
 
 // ============================================================
+// Programmatic entry point — used by Automations to start a manual flow.
+// ============================================================
+
+export async function startFlowForContact(args: {
+  accountId: string;
+  flowId: string;
+  contactId: string;
+  conversationId: string;
+}): Promise<DispatchInboundResult> {
+  const db = supabaseAdmin();
+  const { data: flowData, error } = await db
+    .from("flows")
+    .select("*")
+    .eq("id", args.flowId)
+    .eq("account_id", args.accountId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!flowData) throw new Error("Flow not found in this account");
+
+  const flow = flowData as FlowRow;
+  if (flow.status !== "active") throw new Error("Only active flows can be started");
+  if (!flow.entry_node_id) throw new Error("Flow has no entry node");
+
+  // IDs coming from an Automation config / event payload are untrusted: the
+  // contact and the conversation must both belong to THIS account, and the
+  // conversation must belong to THIS contact. Otherwise a mis-configured (or
+  // hostile) automation could start a Flow in, and message, another tenant's
+  // thread.
+  const { data: contact, error: contactError } = await db
+    .from("contacts")
+    .select("id")
+    .eq("id", args.contactId)
+    .eq("account_id", args.accountId)
+    .maybeSingle();
+  if (contactError) throw contactError;
+  if (!contact) throw new Error("Contact not found in this account");
+
+  const { data: conversation, error: conversationError } = await db
+    .from("conversations")
+    .select("id, contact_id")
+    .eq("id", args.conversationId)
+    .eq("account_id", args.accountId)
+    .maybeSingle();
+  if (conversationError) throw conversationError;
+  if (!conversation || conversation.contact_id !== args.contactId) {
+    throw new Error("Conversation not found for this contact in this account");
+  }
+
+  const existing = await loadActiveRunForContact(db, args.accountId, args.contactId);
+  if (existing) {
+    return {
+      consumed: true,
+      flow_run_id: existing.id,
+      outcome: "duplicate_inbound_ignored",
+    };
+  }
+
+  const nodes = await loadAllNodes(db, flow.id);
+
+  // Re-run the activation validator at start time: a graph that was edited
+  // (or seeded) into an invalid state — dangling edges, an auto-advancing
+  // cycle — must never be started from an automation.
+  const graphErrors = validateFlowForActivation(
+    {
+      name: flow.name,
+      trigger_type: flow.trigger_type,
+      trigger_config: (flow.trigger_config ?? {}) as Record<string, unknown>,
+      entry_node_id: flow.entry_node_id,
+    },
+    [...nodes.values()].map((n) => ({
+      node_key: n.node_key,
+      node_type: n.node_type,
+      config: n.config as unknown as Record<string, unknown>,
+    })),
+  ).filter((issue) => issue.severity === "error");
+  if (graphErrors.length > 0) {
+    throw new Error(
+      `Flow graph is invalid and cannot be started: ${graphErrors[0].message}`,
+    );
+  }
+
+  const syntheticInput: DispatchInboundInput = {
+    accountId: args.accountId,
+    userId: flow.user_id,
+    contactId: args.contactId,
+    conversationId: args.conversationId,
+    message: {
+      kind: "text",
+      text: "",
+      meta_message_id: `automation:${crypto.randomUUID()}`,
+    },
+  };
+
+  return startNewRun(db, flow, syntheticInput, nodes);
+}
+
+// ============================================================
 // Public entry point — the webhook calls this on every inbound.
 // ============================================================
 
@@ -896,6 +1081,21 @@ export async function dispatchInboundToFlows(
       // in-memory. See loadAllNodes.
       const nodes = await loadAllNodes(db, activeRun.flow_id);
       return handleReplyForActiveRun(db, activeRun, input.message, nodes);
+    }
+
+    // No active run. If a human already owns the thread (or a previous
+    // handoff paused AI), do not silently start a fresh conversational
+    // journey on the next customer message. Automations still receive the
+    // message because we return consumed:false.
+    const { data: handoffState } = await db
+      .from("conversations")
+      .select("assigned_agent_id, ai_autoreply_disabled")
+      .eq("id", input.conversationId)
+      .eq("account_id", input.accountId)
+      .maybeSingle();
+
+    if (handoffState?.assigned_agent_id || handoffState?.ai_autoreply_disabled) {
+      return { consumed: false, outcome: "no_match" };
     }
 
     // No active run → look for a flow whose entry trigger matches.
@@ -976,7 +1176,11 @@ async function handleReplyForActiveRun(
     const captured = message.text.trim();
     if (captured.length > 0 && cfg.var_key) {
       // Persist captured value + reset reprompt count atomically.
-      const newVars = { ...run.vars, [cfg.var_key]: captured };
+      const newVars = {
+        ...run.vars,
+        [cfg.var_key]: captured,
+        last_customer_message: captured,
+      };
       const { error: capErr } = await db
         .from("flow_runs")
         .update({
@@ -1072,11 +1276,49 @@ async function handleReplyForActiveRun(
     if (run.conversation_id) {
       await db
         .from("conversations")
-        .update({ status: "pending", updated_at: new Date().toISOString() })
+        .update({
+          status: "pending",
+          ai_autoreply_disabled: true,
+          ai_handoff_summary: "Flow fallback exhausted; human review required",
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", run.conversation_id);
     }
+
+    const eventPayload = {
+      reason: "fallback_exhausted",
+      summary: "Flow fallback exhausted; human review required",
+      flow_id: run.flow_id,
+      flow_run_id: run.id,
+      node_key: run.current_node_key,
+      vars: run.vars,
+    };
+    const event = await recordBusinessEvent(db, {
+      accountId: run.account_id,
+      userId: run.user_id,
+      contactId: run.contact_id,
+      conversationId: run.conversation_id,
+      eventType: "human_handoff_requested",
+      source: "flow_fallback",
+      payload: eventPayload,
+    });
+    const { runAutomationsForTrigger } = await import("@/lib/automations/engine");
+    await runAutomationsForTrigger({
+      accountId: run.account_id,
+      triggerType: "business_event",
+      contactId: run.contact_id,
+      context: {
+        conversation_id: run.conversation_id ?? undefined,
+        business_event_id: event.id,
+        business_event_type: "human_handoff_requested",
+        business_event_payload: eventPayload,
+        vars: run.vars,
+      },
+    });
+
     await logEvent(db, run.id, "handoff", run.current_node_key, {
       reason: "fallback_exhausted",
+      business_event_id: event.id,
     });
     await endRun(db, run.id, "handed_off", "fallback_exhausted");
     return { consumed: true, flow_run_id: run.id, outcome: "handed_off" };
