@@ -251,7 +251,11 @@ export function createFakeDb(
     async rpc(name, args = {}) {
       const handler = opts.rpc?.[name]
       if (!handler) return { data: null, error: null }
-      return { data: handler(args), error: null }
+      try {
+        return { data: handler(args), error: null }
+      } catch (e) {
+        return { data: null, error: { message: e instanceof Error ? e.message : String(e) } }
+      }
     },
   }
   return db
