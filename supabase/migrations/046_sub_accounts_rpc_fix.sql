@@ -13,7 +13,12 @@ ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_accounts_parent_account_id
 ON public.accounts(parent_account_id);
 
-CREATE OR REPLACE FUNCTION public.list_sub_accounts(
+-- Migration 044/045 created list_sub_accounts(UUID) as SETOF accounts.
+-- PostgreSQL cannot change a function's return type with CREATE OR REPLACE,
+-- so remove the old signature before installing the explicit table contract.
+DROP FUNCTION IF EXISTS public.list_sub_accounts(UUID);
+
+CREATE FUNCTION public.list_sub_accounts(
   p_parent_account_id UUID
 )
 RETURNS TABLE(
