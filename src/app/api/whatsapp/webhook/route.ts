@@ -248,16 +248,35 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       const value = change.value
 
-      // Handle status updates. Meta's status vocabulary
-      // (sent/delivered/read/failed) already matches WACRM's shared
-      // ladder 1:1 — see inbound-pipeline.ts's NormalizedStatus.
+      // Handle status updates. Provider message ids are not globally unique,
+      // so resolve the owning account from Meta's phone_number_id first.
       if (value.statuses) {
-        for (const status of value.statuses) {
-          await handleStatusUpdate(supabaseAdmin(), {
-            providerMessageId: status.id,
-            status: status.status as 'sent' | 'delivered' | 'read' | 'failed',
-            timestampMs: parseInt(status.timestamp) * 1000,
-          })
+        const { data: statusConfigs, error: statusConfigError } = await supabaseAdmin()
+          .from('whatsapp_config')
+          .select('account_id')
+          .eq('phone_number_id', value.metadata.phone_number_id)
+
+        if (statusConfigError) {
+          console.error(
+            '[webhook] status account lookup failed:',
+            value.metadata.phone_number_id,
+            statusConfigError,
+          )
+        } else if (statusConfigs?.length === 1) {
+          const statusAccountId = statusConfigs[0].account_id as string
+          for (const status of value.statuses) {
+            await handleStatusUpdate(supabaseAdmin(), statusAccountId, {
+              providerMessageId: status.id,
+              status: status.status as 'sent' | 'delivered' | 'read' | 'failed',
+              timestampMs: parseInt(status.timestamp) * 1000,
+            })
+          }
+        } else {
+          console.error(
+            '[webhook] status callback could not resolve exactly one account:',
+            value.metadata.phone_number_id,
+            statusConfigs?.length ?? 0,
+          )
         }
       }
 
