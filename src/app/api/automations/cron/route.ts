@@ -11,6 +11,7 @@ import {
   releaseBroadcastDelivery,
 } from '@/lib/whatsapp/broadcast-resume'
 import { drainInboundDebounceJobs } from '@/lib/whatsapp/inbound-debounce'
+import { drainBusinessEvents } from '@/lib/business-events/dispatch'
 import {
   deliverBroadcast,
   finalizeBroadcastStatus,
@@ -90,12 +91,20 @@ export async function GET(request: Request) {
     processed++
   }
 
-  const debounceResult = await drainInboundDebounceJobs(admin, 50).catch((error) => {
+  const debounceResult = await drainInboundDebounceJobs(admin, 20).catch((error) => {
     console.error(
       '[inbound-debounce] cron drain failed:',
       error instanceof Error ? error.message : error,
     )
-    return { processed: 0, failed: 1 }
+    return { processed: 0, failed: 1, recovered: 0, dead: 0 }
+  })
+
+  const businessEventResult = await drainBusinessEvents(admin, 20).catch((error) => {
+    console.error(
+      '[business-events] cron drain failed:',
+      error instanceof Error ? error.message : error,
+    )
+    return { processed: 0, failed: 1, recovered: 0, dead: 0 }
   })
 
   const { data: dueBroadcasts, error: broadcastError } = await admin
@@ -113,6 +122,12 @@ export async function GET(request: Request) {
         processed,
         debounced_inbound: debounceResult.processed,
         debounce_failed: debounceResult.failed,
+        debounce_recovered: debounceResult.recovered,
+        debounce_dead: debounceResult.dead,
+        business_events: businessEventResult.processed,
+        business_event_failed: businessEventResult.failed,
+        business_event_recovered: businessEventResult.recovered,
+        business_event_dead: businessEventResult.dead,
       },
       { status: 500 },
     )
@@ -179,6 +194,12 @@ export async function GET(request: Request) {
     processed,
     debounced_inbound: debounceResult.processed,
     debounce_failed: debounceResult.failed,
+    debounce_recovered: debounceResult.recovered,
+    debounce_dead: debounceResult.dead,
+    business_events: businessEventResult.processed,
+    business_event_failed: businessEventResult.failed,
+    business_event_recovered: businessEventResult.recovered,
+    business_event_dead: businessEventResult.dead,
     scheduled_broadcasts: scheduledBroadcasts,
   })
 }
