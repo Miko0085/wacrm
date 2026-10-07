@@ -237,14 +237,14 @@ async function executeAutomation(automation: Automation, input: DispatchInput): 
 
   const { data: completedLog, error: completedLogError } = await db
     .from('automation_logs')
-    .select('status')
+    .select('status, error_message')
     .eq('id', log.id)
     .single()
   if (completedLogError) {
     console.error('[automations] cannot verify execution status:', completedLogError)
     return false
   }
-  return completedLog?.status !== 'failed'
+  return completedLog?.status !== 'failed' && !completedLog?.error_message
 }
 
 interface ExecuteArgs {
