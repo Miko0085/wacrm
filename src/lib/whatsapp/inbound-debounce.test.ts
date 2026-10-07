@@ -334,11 +334,25 @@ describe('processDebouncedInboundTurn — AI suppression follows the ACTUAL auto
     )
   })
 
-  it('a Flow that consumed the turn short-circuits automations and AI entirely', async () => {
+  it('runs automations before Flow handling, then skips AI if the Flow consumes the turn', async () => {
     h.dispatchInboundToFlows.mockResolvedValue({ consumed: true })
     await processDebouncedInboundTurn(db, J)
-    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.runAutomationsForTrigger).toHaveBeenCalled()
+    expect(h.dispatchInboundToFlows).toHaveBeenCalled()
     expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('does not also run a Flow when an automation attempted a customer-facing response', async () => {
+    h.runAutomationsForTrigger.mockImplementation(async ({ triggerType }) => ({
+      ...NO_DISPATCH,
+      matched: triggerType === 'new_message_received' ? 1 : 0,
+      customer_facing_attempted: triggerType === 'new_message_received',
+    }))
+    await processDebouncedInboundTurn(db, J)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith(
+      expect.objectContaining({ deterministicResponderHandled: true }),
+    )
   })
 
   it('matches keywords against the MERGED text of the whole burst', async () => {
