@@ -296,30 +296,76 @@ async function ensureFlow(userId) {
 
   let flowId = existing?.id
   if (existing) {
-    const { error } = await db.from('flows').update(desired).eq('id', flowId)
+    const { count: activeRuns, error: runError } = await db
+      .from('flow_runs')
+      .select('id', { count: 'exact', head: true })
+      .eq('flow_id', flowId)
+      .eq('status', 'active')
+    if (runError) throw runError
+    if ((activeRuns ?? 0) > 0) {
+      throw new Error(
+        `Refusing to replace managed flow while ${activeRuns} active run(s) exist. Finish/handoff them first.`,
+      )
+    }
+  }
+
+  const previousStatus = existing?.status ?? null
+  const { data: previousNodes, error: backupError } = existing
+    ? await db.from('flow_nodes').select('*').eq('flow_id', flowId)
+    : { data: [], error: null }
+  if (backupError) throw backupError
+
+  if (existing) {
+    // Make the managed flow temporarily non-startable while its graph is
+    // replaced. startFlowForContact also rejects non-active flows.
+    const { error } = await db
+      .from('flows')
+      .update({ ...desired, status: 'draft' })
+      .eq('id', flowId)
     if (error) throw error
   } else {
     const { data, error } = await db
       .from('flows')
-      .insert(desired)
+      .insert({ ...desired, status: 'draft' })
       .select('id')
       .single()
     if (error) throw error
     flowId = data.id
   }
 
-  // Replace only nodes belonging to this exact managed flow. No other
-  // existing flow or automation is deleted or modified.
-  const { error: delError } = await db
-    .from('flow_nodes')
-    .delete()
-    .eq('flow_id', flowId)
-  if (delError) throw delError
+  try {
+    const { error: delError } = await db
+      .from('flow_nodes')
+      .delete()
+      .eq('flow_id', flowId)
+    if (delError) throw delError
 
-  const { error: nodesError } = await db.from('flow_nodes').insert(
-    nodes.map((node) => ({ ...node, flow_id: flowId })),
-  )
-  if (nodesError) throw nodesError
+    const { error: nodesError } = await db.from('flow_nodes').insert(
+      nodes.map((node) => ({ ...node, flow_id: flowId })),
+    )
+    if (nodesError) throw nodesError
+
+    const { error: activateError } = await db
+      .from('flows')
+      .update({ status: desired.status })
+      .eq('id', flowId)
+    if (activateError) throw activateError
+  } catch (err) {
+    await db.from('flow_nodes').delete().eq('flow_id', flowId)
+    if (previousNodes?.length) {
+      const { error: restoreError } = await db.from('flow_nodes').insert(previousNodes)
+      if (restoreError) {
+        console.error('CRITICAL: failed to restore previous flow nodes', restoreError)
+      }
+    }
+    if (existing) {
+      await db
+        .from('flows')
+        .update({ status: previousStatus, ...existing })
+        .eq('id', flowId)
+    }
+    throw err
+  }
 
   return flowId
 }
