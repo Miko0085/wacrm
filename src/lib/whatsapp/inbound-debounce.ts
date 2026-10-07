@@ -131,7 +131,7 @@ export async function drainInboundDebounceJobs(
     .from('inbound_debounce_jobs')
     .select('id, version')
     .eq('status', 'running')
-    .lt('locked_at', staleBefore)
+    .or(`locked_at.is.null,locked_at.lt.${staleBefore}`)
     .limit(limit)
 
   if (staleError) throw staleError
