@@ -13,8 +13,11 @@ export interface InboundDebounceJob {
   text_parts: unknown
   is_first_inbound: boolean
   version: number
-  status: 'pending' | 'running'
+  status: 'pending' | 'running' | 'dead'
   run_at: string
+  locked_at?: string | null
+  attempt_count?: number
+  last_error?: string | null
 }
 
 export async function queueInboundTextTurn(args: {
@@ -108,11 +111,50 @@ export async function processDebouncedInboundTurn(
   }
 }
 
+const DEBOUNCE_LEASE_MS = 5 * 60_000
+const MAX_DEBOUNCE_ATTEMPTS = 5
+
+export function debounceRetryDelayMs(attempt: number): number {
+  const safeAttempt = Math.max(1, Math.floor(attempt))
+  return Math.min(15 * 60_000, 30_000 * 2 ** (safeAttempt - 1))
+}
+
 export async function drainInboundDebounceJobs(
   db: SupabaseClient,
-  limit = 50,
-): Promise<{ processed: number; failed: number }> {
-  const nowIso = new Date().toISOString()
+  limit = 20,
+): Promise<{ processed: number; failed: number; recovered: number; dead: number }> {
+  const now = Date.now()
+  const nowIso = new Date(now).toISOString()
+  const staleBefore = new Date(now - DEBOUNCE_LEASE_MS).toISOString()
+
+  const { data: staleRows, error: staleError } = await db
+    .from('inbound_debounce_jobs')
+    .select('id, version')
+    .eq('status', 'running')
+    .lt('locked_at', staleBefore)
+    .limit(limit)
+
+  if (staleError) throw staleError
+
+  let recovered = 0
+  for (const stale of staleRows ?? []) {
+    const { data: revived, error: reviveError } = await db
+      .from('inbound_debounce_jobs')
+      .update({
+        status: 'pending',
+        locked_at: null,
+        run_at: nowIso,
+        last_error: 'worker lease expired; recovered by scheduler',
+        updated_at: nowIso,
+      })
+      .eq('id', stale.id)
+      .eq('version', stale.version)
+      .eq('status', 'running')
+      .select('id')
+      .maybeSingle()
+    if (!reviveError && revived) recovered += 1
+  }
+
   const { data: rows, error } = await db
     .from('inbound_debounce_jobs')
     .select('*')
@@ -125,12 +167,18 @@ export async function drainInboundDebounceJobs(
 
   let processed = 0
   let failed = 0
+  let dead = 0
 
   for (const raw of rows ?? []) {
     const row = raw as InboundDebounceJob
     const { data: claimed, error: claimError } = await db
       .from('inbound_debounce_jobs')
-      .update({ status: 'running', updated_at: new Date().toISOString() })
+.update({
+        status: 'running',
+        locked_at: new Date().toISOString(),
+        attempt_count: (row.attempt_count ?? 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', row.id)
       .eq('version', row.version)
       .eq('status', 'pending')
@@ -161,11 +209,16 @@ export async function drainInboundDebounceJobs(
         claimedJob.id,
         err instanceof Error ? err.message : err,
       )
+      const attempts = claimedJob.attempt_count ?? 1
+      const terminal = attempts >= MAX_DEBOUNCE_ATTEMPTS
+      if (terminal) dead += 1
       await db
         .from('inbound_debounce_jobs')
         .update({
-          status: 'pending',
-          run_at: new Date(Date.now() + 60_000).toISOString(),
+          status: terminal ? 'dead' : 'pending',
+          locked_at: null,
+          run_at: new Date(Date.now() + debounceRetryDelayMs(attempts)).toISOString(),
+          last_error: err instanceof Error ? err.message : String(err),
           updated_at: new Date().toISOString(),
         })
         .eq('id', claimedJob.id)
@@ -174,5 +227,5 @@ export async function drainInboundDebounceJobs(
     }
   }
 
-  return { processed, failed }
+  return { processed, failed, recovered, dead }
 }
