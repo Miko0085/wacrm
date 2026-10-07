@@ -160,3 +160,18 @@ ALTER TABLE telegram_connections
 ALTER TABLE telegram_connections
   ADD CONSTRAINT telegram_connections_created_by_fkey
   FOREIGN KEY (created_by) REFERENCES auth.users(id) ON DELETE SET NULL;
+
+
+-- Tie automation executions to durable business events. Successful deliveries
+-- are unique per (automation,event), allowing failed events to retry without
+-- repeating automations that already completed.
+ALTER TABLE automation_logs
+  ADD COLUMN IF NOT EXISTS business_event_id UUID REFERENCES business_events(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_automation_logs_business_event
+  ON automation_logs(business_event_id)
+  WHERE business_event_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_event_success_once
+  ON automation_logs(automation_id, business_event_id)
+  WHERE business_event_id IS NOT NULL AND status = 'success';
