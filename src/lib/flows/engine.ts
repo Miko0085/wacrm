@@ -40,6 +40,7 @@ import {
   engineSendText,
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
+import { validateFlowForActivation } from "./validate";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { recordBusinessEvent } from "@/lib/business-events/record";
@@ -968,8 +969,33 @@ export async function startFlowForContact(args: {
   if (!flowData) throw new Error("Flow not found in this account");
 
   const flow = flowData as FlowRow;
-  if (!flow.entry_node_id) throw new Error("Flow has no entry node");
   if (flow.status !== "active") throw new Error("Only active flows can be started");
+  if (!flow.entry_node_id) throw new Error("Flow has no entry node");
+
+  // IDs coming from an Automation config / event payload are untrusted: the
+  // contact and the conversation must both belong to THIS account, and the
+  // conversation must belong to THIS contact. Otherwise a mis-configured (or
+  // hostile) automation could start a Flow in, and message, another tenant's
+  // thread.
+  const { data: contact, error: contactError } = await db
+    .from("contacts")
+    .select("id")
+    .eq("id", args.contactId)
+    .eq("account_id", args.accountId)
+    .maybeSingle();
+  if (contactError) throw contactError;
+  if (!contact) throw new Error("Contact not found in this account");
+
+  const { data: conversation, error: conversationError } = await db
+    .from("conversations")
+    .select("id, contact_id")
+    .eq("id", args.conversationId)
+    .eq("account_id", args.accountId)
+    .maybeSingle();
+  if (conversationError) throw conversationError;
+  if (!conversation || conversation.contact_id !== args.contactId) {
+    throw new Error("Conversation not found for this contact in this account");
+  }
 
   const existing = await loadActiveRunForContact(db, args.accountId, args.contactId);
   if (existing) {
@@ -981,6 +1007,29 @@ export async function startFlowForContact(args: {
   }
 
   const nodes = await loadAllNodes(db, flow.id);
+
+  // Re-run the activation validator at start time: a graph that was edited
+  // (or seeded) into an invalid state — dangling edges, an auto-advancing
+  // cycle — must never be started from an automation.
+  const graphErrors = validateFlowForActivation(
+    {
+      name: flow.name,
+      trigger_type: flow.trigger_type,
+      trigger_config: (flow.trigger_config ?? {}) as Record<string, unknown>,
+      entry_node_id: flow.entry_node_id,
+    },
+    [...nodes.values()].map((n) => ({
+      node_key: n.node_key,
+      node_type: n.node_type,
+      config: n.config as unknown as Record<string, unknown>,
+    })),
+  ).filter((issue) => issue.severity === "error");
+  if (graphErrors.length > 0) {
+    throw new Error(
+      `Flow graph is invalid and cannot be started: ${graphErrors[0].message}`,
+    );
+  }
+
   const syntheticInput: DispatchInboundInput = {
     accountId: args.accountId,
     userId: flow.user_id,

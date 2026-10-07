@@ -11,7 +11,19 @@
 type Row = Record<string, unknown>
 type Pred = (row: Row) => boolean
 
+export interface FakeRelation {
+  /** Column on the child row that references the parent's `id`. */
+  fk: string
+  table: string
+}
+
 export interface FakeDbOptions {
+  /**
+   * Foreign-key map used to resolve `eq('relation.column', v)` filters, which
+   * is how supabase-js expresses a filter on an embedded `relation!inner(...)`:
+   * relations[childTable][relationName].
+   */
+  relations?: Record<string, Record<string, FakeRelation>>
   rpc?: Record<string, (args: Record<string, unknown>) => unknown>
   /** Called on every write so tests can simulate a concurrent writer. */
   onWrite?: (table: string, kind: 'insert' | 'update' | 'delete') => void
@@ -91,6 +103,16 @@ class Builder implements PromiseLike<{ data: unknown; error: unknown; count?: nu
     return this
   }
   eq(col: string, value: unknown) {
+    if (col.includes('.')) {
+      const [rel, field] = col.split('.')
+      const relation = this.opts.relations?.[this.table]?.[rel]
+      if (!relation) throw new Error(`fake-db: no relation "${rel}" configured for ${this.table}`)
+      this.preds.push((r) => {
+        const parent = (this.db.tables[relation.table] ?? []).find((p) => p.id === r[relation.fk])
+        return parent !== undefined && parent[field] === value
+      })
+      return this
+    }
     this.preds.push((r) => r[col] === value)
     return this
   }
