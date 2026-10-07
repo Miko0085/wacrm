@@ -515,9 +515,6 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const eventType = interpolate(cfg.event_type ?? '', args).trim()
       if (!eventType) throw new Error('emit_business_event needs event_type')
 
-      const depth = Number(args.context.vars?._business_event_depth ?? 0)
-      if (depth >= 5) throw new Error('business event recursion limit reached')
-
       let payload: Record<string, unknown> = {}
       if (cfg.payload_template?.trim()) {
         const rendered = interpolate(cfg.payload_template, args)
@@ -538,23 +535,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         payload,
       })
 
-      await runAutomationsForTrigger({
-        accountId: args.automation.account_id,
-        triggerType: 'business_event',
-        contactId: args.contactId,
-        context: {
-          ...args.context,
-          business_event_id: recorded.id,
-          business_event_type: eventType,
-          business_event_payload: payload,
-          vars: {
-            ...(args.context.vars ?? {}),
-            _business_event_depth: depth + 1,
-          },
-        },
-      })
-
-      return `business event ${eventType} emitted (${recorded.id})`
+      return `business event ${eventType} queued (${recorded.id})`
     }
     case 'start_flow': {
       const cfg = step.step_config as StartFlowStepConfig
