@@ -14,8 +14,15 @@ This upgrade is additive and preserves existing production Flows and Automations
 
 ### Business Events
 
-`053_business_events.sql` adds account-scoped durable events.
-Automations can trigger on business events and emit them. Flow and AI handoff paths emit `human_handoff_requested`.
+`053_business_events.sql` adds account-scoped durable events and
+`057_orchestration_hardening.sql` upgrades them into an at-least-once outbox.
+Automations can trigger on business events and emit them. Flow and AI handoff
+paths emit `human_handoff_requested`.
+
+The scheduler claims pending events with a lease, retries failures with backoff,
+recovers abandoned `running` rows and dead-letters repeatedly failing events.
+Successful automation delivery is deduplicated per `(automation_id, event_id)`.
+External consumers should also use `{{event.id}}` as an idempotency key.
 
 ### Telegram
 
@@ -35,9 +42,15 @@ The node exposes `ai_primary_intent`, `ai_confidence`, `ai_requires_human`, `ai_
 
 ### Durable inbound debounce
 
-`056_inbound_debounce.sql` adds a per-conversation queue.
-Plain-text WhatsApp messages are stored immediately, but Flow/Automation/AI decisioning waits for 35 seconds of silence. New text resets the timer. Interactive replies remain immediate.
-The existing `/api/automations/cron` endpoint drains due debounce jobs.
+`056_inbound_debounce.sql` adds a per-conversation queue and
+`057_orchestration_hardening.sql` adds worker leases, retries, recovery and
+dead-lettering.
+Plain-text WhatsApp messages are stored immediately, but Flow/Automation/AI
+decisioning waits for 35 seconds of silence. New text resets the timer.
+Interactive replies remain immediate.
+The existing `/api/automations/cron` endpoint drains bounded batches of due
+debounce jobs. A crashed worker no longer leaves a conversation permanently
+stuck in `running`.
 
 ### Handoff ownership
 
@@ -57,9 +70,11 @@ Managed objects:
 - Nika — Human Handoff → Telegram
 - optional Nika — Human Handoff → External Webhook
 
-Optional environment variables:
+Required environment variables:
 
 - NIKA_WACRM_ACCOUNT_ID
+
+Optional environment variables:
 - NIKA_WACRM_OWNER_USER_ID
 - NIKA_SELECTION_REPLY_IDS
 - NIKA_CALL_REPLY_IDS
@@ -88,12 +103,12 @@ Apply:
 
 1. Pull the branch.
 2. Run typecheck/tests.
-3. Apply migrations 053 through 056.
+3. Apply migrations 053 through 057.
 4. Rebuild and recreate the app container.
 5. Verify health.
 6. Connect/test Telegram bot if needed.
 7. Run seed dry-run and review.
-8. Run seed with --apply.
+8. Run seed with --apply. The seed refuses to guess the account ID and refuses to replace a managed Flow while it has active runs.
 9. Test selection reply, merged text turn, expert-question handoff, call-request handoff, Telegram notification, and existing Greece -> amoCRM routing.
 
 ## Rollback
@@ -101,3 +116,20 @@ Apply:
 The pre-upgrade production configuration remains under `config/snapshots/2026-10-06/`.
 Raw production exports remain under Git-ignored `backups/` on the production server.
 Do not blindly restore the JSON snapshot over a live database.
+
+## Production hardening notes
+
+- Provider delivery callbacks are resolved to an account before any message or
+  broadcast-recipient status write. Provider message IDs are not treated as
+  globally unique.
+- Only active Flows may be started by Automations.
+- Flow activation rejects cycles composed entirely of auto-advancing nodes.
+- AI auto-reply stands down only when a matching deterministic automation has
+  a customer-facing response action; unrelated CRM-only automations do not mute
+  the AI.
+- Telegram handoff notifications use plain text by default and read handoff
+  details from the durable business event payload.
+- Managed seed updates disable the target automation/flow while replacing its
+  graph and restore the previous configuration on replacement failure.
+- Migration 057 marks pre-existing business events as dispatched so deployment
+  does not replay historical handoffs.
