@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
     rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
     afterCallbacks: [] as (() => Promise<void> | void)[],
     automationStarted: 0,
+    debounceQueueFails: false,
     automationCompleted: 0,
     /** whatsapp_config.mirror_inbound_media for the matched row (#466). */
     mirrorInboundMedia: true as boolean | undefined,
@@ -143,6 +144,9 @@ vi.mock('@supabase/supabase-js', () => ({
     rpc: (name: string, args: Record<string, unknown>) => {
       h.state.rpcCalls.push({ name, args })
       if (name === 'queue_inbound_debounce') {
+        if (h.state.debounceQueueFails) {
+          return Promise.resolve({ data: null, error: new Error('queue down') })
+        }
         return Promise.resolve({ data: 'debounce-job-1', error: null })
       }
       return Promise.resolve({ data: null, error: null })
@@ -259,6 +263,7 @@ beforeEach(() => {
   h.state.rpcCalls = []
   h.state.afterCallbacks = []
   h.state.automationStarted = 0
+  h.state.debounceQueueFails = false
   h.state.automationCompleted = 0
   h.state.mirrorInboundMedia = true
   h.state.storageUploads = []
@@ -544,6 +549,10 @@ describe('inbound webhook: inbound media is mirrored (#466)', () => {
 
 describe('inbound webhook: after() awaits automations (#368)', () => {
   it('every triggered automation settles before the after() callback resolves', async () => {
+    // Text turns normally go through the durable debounce queue. The #368
+    // contract applies to the immediate-dispatch path, which is what runs
+    // when the queue is unavailable (fail-open).
+    h.state.debounceQueueFails = true
     await runWebhook()
 
     // first_inbound_message + new_message_received + keyword_match.
