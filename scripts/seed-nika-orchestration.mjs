@@ -3,8 +3,7 @@
 import { createClient } from '@supabase/supabase-js'
 
 const APPLY = process.argv.includes('--apply')
-const ACCOUNT_ID =
-  process.env.NIKA_WACRM_ACCOUNT_ID || '6762c55f-cbc9-4185-ad56-fca989006295'
+const ACCOUNT_ID = (process.env.NIKA_WACRM_ACCOUNT_ID || '').trim()
 const SUPABASE_URL =
   process.env.SUPABASE_INTERNAL_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -13,6 +12,11 @@ if (!SUPABASE_URL || !SERVICE_ROLE) {
   console.error(
     'Missing SUPABASE_INTERNAL_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY',
   )
+  process.exit(1)
+}
+
+if (!ACCOUNT_ID) {
+  console.error('NIKA_WACRM_ACCOUNT_ID is required. Refusing to guess a production account.')
   process.exit(1)
 }
 
@@ -321,11 +325,11 @@ async function ensureFlow(userId) {
 }
 
 async function replaceAutomationSteps(automationId, steps) {
-  const { error: delError } = await db
+  const { data: previousRows, error: backupError } = await db
     .from('automation_steps')
-    .delete()
+    .select('*')
     .eq('automation_id', automationId)
-  if (delError) throw delError
+  if (backupError) throw backupError
 
   const rows = []
   const walk = (list, parentId = null, branch = null) => {
@@ -346,9 +350,29 @@ async function replaceAutomationSteps(automationId, steps) {
   }
   walk(steps)
 
-  if (rows.length) {
-    const { error } = await db.from('automation_steps').insert(rows)
-    if (error) throw error
+  const { error: delError } = await db
+    .from('automation_steps')
+    .delete()
+    .eq('automation_id', automationId)
+  if (delError) throw delError
+
+  try {
+    if (rows.length) {
+      const { error } = await db.from('automation_steps').insert(rows)
+      if (error) throw error
+    }
+  } catch (err) {
+    // Best-effort rollback: restore the exact previous step rows before
+    // surfacing the apply failure. The automation is kept inactive by the
+    // caller while replacement is in progress.
+    await db.from('automation_steps').delete().eq('automation_id', automationId)
+    if (previousRows?.length) {
+      const { error: restoreError } = await db.from('automation_steps').insert(previousRows)
+      if (restoreError) {
+        console.error('CRITICAL: failed to restore previous automation steps', restoreError)
+      }
+    }
+    throw err
   }
 }
 
@@ -374,19 +398,41 @@ async function ensureAutomation(userId, spec) {
 
   let id = existing?.id
   if (existing) {
-    const { error } = await db.from('automations').update(desired).eq('id', id)
+    // Disable the managed automation during step replacement so a live trigger
+    // can never observe a partially replaced tree.
+    const { error } = await db
+      .from('automations')
+      .update({ ...desired, is_active: false })
+      .eq('id', id)
     if (error) throw error
   } else {
     const { data, error } = await db
       .from('automations')
-      .insert(desired)
+      .insert({ ...desired, is_active: false })
       .select('id')
       .single()
     if (error) throw error
     id = data.id
   }
 
-  await replaceAutomationSteps(id, spec.steps)
+  try {
+    await replaceAutomationSteps(id, spec.steps)
+    const { error: activateError } = await db
+      .from('automations')
+      .update({ is_active: desired.is_active })
+      .eq('id', id)
+    if (activateError) throw activateError
+  } catch (err) {
+    // Existing automations retain their previous activation state after a
+    // failed apply; newly created ones remain inactive for safe inspection.
+    if (existing) {
+      await db
+        .from('automations')
+        .update({ is_active: existing.is_active })
+        .eq('id', id)
+    }
+    throw err
+  }
   return id
 }
 
@@ -479,9 +525,9 @@ async function main() {
         step_config: {
           connection_id: telegramConnectionId || '',
           chat_id: '',
-          parse_mode: 'HTML',
+          parse_mode: null,
           message:
-            '🚨 <b>WACRM human handoff</b>\nContact: {{contact.id}}\nConversation: {{conversation.id}}\nReason: {{vars.ai_reason}}\nSummary: {{vars.ai_summary}}',
+            '🚨 WACRM human handoff\nEvent: {{event.id}}\nContact: {{contact.id}}\nConversation: {{conversation.id}}\nReason: {{event.reason}}\nSummary: {{event.summary}}',
         },
       },
     ],
